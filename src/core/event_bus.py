@@ -29,5 +29,15 @@ class EventBus:
         callbacks = self._subscribers.get(event_type, [])
         logger.info("Event published: %s | subscribers=%d", event_type, len(callbacks))
         for callback in callbacks:
-            asyncio.create_task(callback(data))
+            task = asyncio.create_task(callback(data))
+            task.add_done_callback(self._log_task_error)
+
+    @staticmethod
+    def _log_task_error(task: asyncio.Task) -> None:
+        """Log callback exception from detached event tasks."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc:
+            logger.exception("Event callback task failed: %s", exc)
 

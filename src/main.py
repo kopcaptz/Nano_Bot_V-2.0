@@ -53,7 +53,7 @@ async def main() -> None:
         "vision": vision_adapter,
     }
 
-    CommandHandler(
+    command_handler = CommandHandler(
         event_bus=event_bus,
         llm_router=llm_router,
         memory=memory,
@@ -62,6 +62,7 @@ async def main() -> None:
         browser=browser_adapter,
         vision=vision_adapter,
     )
+    await command_handler.initialize()
 
     shutdown_event = asyncio.Event()
     shutdown_started = False

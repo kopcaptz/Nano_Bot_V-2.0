@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -32,9 +31,10 @@ class CommandHandler:
         self.llm_router = llm_router
         self.memory = memory
         self.adapters = adapters
-        self._subscription_task = asyncio.create_task(
-            self.event_bus.subscribe("telegram.command.received", self.handle_command)
-        )
+
+    async def initialize(self) -> None:
+        """Register handler subscriptions on the event bus."""
+        await self.event_bus.subscribe("telegram.command.received", self.handle_command)
 
     async def handle_command(self, event_data: dict[str, Any]) -> None:
         """Handle user command received from Telegram."""
