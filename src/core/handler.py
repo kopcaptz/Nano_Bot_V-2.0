@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 class CommandHandler:
     """Coordinates incoming commands, LLM processing, and adapter actions."""
+    MAX_COMMAND_LENGTH = 8000
 
     def __init__(
         self,
@@ -46,12 +47,25 @@ class CommandHandler:
             return
 
         command = str(event_data.get("command", "")).strip()
-        logger.info("Handling command for chat_id=%s: %s", chat_id, command)
+        command_preview = command[:200] + ("..." if len(command) > 200 else "")
+        logger.info("Handling command for chat_id=%s: %s", chat_id, command_preview)
 
         if not command:
             await self.event_bus.publish(
                 "telegram.send.reply",
                 {"chat_id": chat_id, "text": "Пустая команда. Отправьте текстовый запрос."},
+            )
+            return
+        if len(command) > self.MAX_COMMAND_LENGTH:
+            await self.event_bus.publish(
+                "telegram.send.reply",
+                {
+                    "chat_id": chat_id,
+                    "text": (
+                        f"Команда слишком длинная ({len(command)} символов). "
+                        f"Максимум: {self.MAX_COMMAND_LENGTH}."
+                    ),
+                },
             )
             return
 
