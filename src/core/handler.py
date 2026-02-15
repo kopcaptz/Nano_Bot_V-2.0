@@ -20,6 +20,15 @@ logger = logging.getLogger(__name__)
 class CommandHandler:
     """Coordinates incoming commands, LLM processing, and adapter actions."""
     MAX_COMMAND_LENGTH = 8000
+    HELP_TEXT = (
+        "Доступные команды:\n"
+        "/help — показать эту справку\n"
+        "/clear_history — очистить историю диалога\n"
+        "/system <cmd> — выполнить безопасную системную команду\n"
+        "/browser_open <url> — открыть страницу\n"
+        "/browser_text [url] — получить текст страницы\n"
+        "/screenshot <filename.png> — сделать скриншот"
+    )
 
     def __init__(
         self,
@@ -96,12 +105,16 @@ class CommandHandler:
         Handle simple MVP adapter commands.
 
         Supported:
+        - /help
         - /clear_history
         - /system <cmd>
         - /browser_open <url>
         - /browser_text [url]
         - /screenshot <filename>
         """
+        if command == "/help":
+            return self.HELP_TEXT
+
         if command == "/clear_history":
             self.memory.clear_history(chat_id)
             return "История диалога очищена."
