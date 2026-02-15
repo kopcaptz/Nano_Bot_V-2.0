@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from urllib.parse import urlparse
 
 try:  # script mode: python src/main.py
     from core.event_bus import EventBus
@@ -255,8 +254,8 @@ class CommandHandler:
     @staticmethod
     def _normalize_url(url: str) -> str:
         """Normalize URL and add https:// when scheme is omitted."""
-        parsed = urlparse(url)
-        if parsed.scheme:
+        lowered = url.lower()
+        if lowered.startswith(("http://", "https://", "data:", "about:")):
             return url
         return f"https://{url}"
 
