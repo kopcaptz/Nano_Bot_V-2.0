@@ -46,7 +46,8 @@ class VisionAdapter(BaseAdapter):
         if requested.name != filename:
             raise PermissionError("Filename must not include directory traversal.")
         output_path = (self.screenshots_dir / requested.name).resolve()
-        if not str(output_path).startswith(str(self.screenshots_dir.resolve())):
+        screenshots_root = self.screenshots_dir.resolve()
+        if output_path != screenshots_root and screenshots_root not in output_path.parents:
             raise PermissionError("Screenshot path is outside screenshots directory.")
 
         with mss.mss() as sct:
