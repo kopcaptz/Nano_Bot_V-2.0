@@ -239,11 +239,17 @@ class CommandHandler:
         )
         model_name = getattr(self.llm_router, "model", "unknown")
         lines.append(f"🤖 model: {model_name}")
+        context_limit = getattr(self.llm_router, "max_context_messages", None)
+        if isinstance(context_limit, int):
+            lines.append(f"🧠 llm context limit: {context_limit}")
 
         system_adapter = self.adapters.get("system")
         workspace_path = getattr(system_adapter, "workspace", None)
         if workspace_path is not None:
             lines.append(f"📂 workspace: {workspace_path}")
+        memory_limit = getattr(self.memory, "max_messages_per_chat", None)
+        if isinstance(memory_limit, int):
+            lines.append(f"🧠 memory limit: {memory_limit}")
         return "\n".join(lines)
 
     @staticmethod
