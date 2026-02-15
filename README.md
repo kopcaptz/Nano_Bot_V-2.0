@@ -42,8 +42,10 @@ pip install -r requirements.txt
 ## 4) Установка браузеров для Playwright
 
 ```bash
-playwright install
+python -m playwright install
 ```
+
+Если команда `playwright` не найдена в PATH, используйте именно вариант через `python -m`.
 
 ## 5) Создание `.env` из `.env.example`
 
