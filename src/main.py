@@ -75,10 +75,6 @@ async def main() -> None:
         logger.info("Shutdown requested: %s", reason)
         shutdown_event.set()
 
-    # Per specification: start all adapters concurrently via asyncio.gather
-    # Adapter start() initializes resources; long-running adapters manage own loop.
-    await asyncio.gather(*(adapter.start() for adapter in adapters.values()))
-
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -89,16 +85,19 @@ async def main() -> None:
         except NotImplementedError:
             logger.warning("Signal handlers are not supported on this platform.")
 
-    logger.info("Nano Bot V-2.0 started.")
     try:
+        # Per specification: start all adapters concurrently via asyncio.gather
+        await asyncio.gather(*(adapter.start() for adapter in adapters.values()))
+        logger.info("Nano Bot V-2.0 started.")
         await shutdown_event.wait()
     except KeyboardInterrupt:
         await request_shutdown("keyboard interrupt")
-
-    logger.info("Stopping adapters...")
-    await asyncio.gather(*(adapter.stop() for adapter in adapters.values()), return_exceptions=True)
-
-    logger.info("Nano Bot V-2.0 stopped.")
+    except Exception:  # noqa: BLE001
+        logger.exception("Fatal error in main runtime loop.")
+    finally:
+        logger.info("Stopping adapters...")
+        await asyncio.gather(*(adapter.stop() for adapter in adapters.values()), return_exceptions=True)
+        logger.info("Nano Bot V-2.0 stopped.")
 
 
 if __name__ == "__main__":

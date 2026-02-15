@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import Any
 
@@ -27,6 +26,7 @@ class TelegramAdapter(BaseAdapter):
         self.token = token
         self._app: Application | None = None
         self._running = False
+        self._reply_subscribed = False
 
     async def start(self) -> None:
         """Start telegram polling and register handlers."""
@@ -35,7 +35,9 @@ class TelegramAdapter(BaseAdapter):
             return
 
         self._running = True
-        await self.event_bus.subscribe("telegram.send.reply", self.send_message)
+        if not self._reply_subscribed:
+            await self.event_bus.subscribe("telegram.send.reply", self.send_message)
+            self._reply_subscribed = True
 
         self._app = Application.builder().token(self.token).build()
         self._app.add_handler(CommandHandler("start", self._handle_start))
@@ -47,9 +49,7 @@ class TelegramAdapter(BaseAdapter):
         await self._app.initialize()
         await self._app.start()
         await self._app.updater.start_polling(drop_pending_updates=True)
-
-        while self._running:
-            await asyncio.sleep(0.5)
+        logger.info("Telegram adapter started.")
 
     async def stop(self) -> None:
         """Stop telegram polling gracefully."""
@@ -58,7 +58,10 @@ class TelegramAdapter(BaseAdapter):
             return
 
         logger.info("Stopping Telegram adapter...")
-        await self._app.updater.stop()
+        try:
+            await self._app.updater.stop()
+        except Exception:  # noqa: BLE001
+            logger.debug("Telegram updater already stopped.")
         await self._app.stop()
         await self._app.shutdown()
         self._app = None
