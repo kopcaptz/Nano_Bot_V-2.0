@@ -28,6 +28,7 @@ except ModuleNotFoundError:  # package mode: import src.main
     from src.core.memory import CrystalMemory
 
 logger = logging.getLogger(__name__)
+STOP_TIMEOUT_SECONDS = 10.0
 
 
 async def main() -> None:
@@ -88,6 +89,18 @@ async def main() -> None:
             logger.exception("Adapter '%s' failed to start.", name)
             return False
 
+    async def stop_adapter(name: str, adapter: object) -> None:
+        """Stop adapter with timeout guard to avoid hanging shutdown."""
+        try:
+            await asyncio.wait_for(adapter.stop(), timeout=STOP_TIMEOUT_SECONDS)
+            logger.info("Adapter '%s' stopped.", name)
+        except asyncio.TimeoutError:
+            logger.error(
+                "Adapter '%s' stop timed out after %.1fs", name, STOP_TIMEOUT_SECONDS
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Adapter '%s' failed during stop.", name)
+
     loop = asyncio.get_running_loop()
 
     def _signal_fallback_handler(sig_num: int, _frame: object) -> None:
@@ -141,7 +154,10 @@ async def main() -> None:
         logger.exception("Fatal error in main runtime loop.")
     finally:
         logger.info("Stopping adapters...")
-        await asyncio.gather(*(adapter.stop() for adapter in adapters.values()), return_exceptions=True)
+        await asyncio.gather(
+            *(stop_adapter(name, adapter) for name, adapter in adapters.items()),
+            return_exceptions=True,
+        )
         logger.info("Nano Bot V-2.0 stopped.")
 
 
