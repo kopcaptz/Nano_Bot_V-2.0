@@ -49,6 +49,10 @@ class SystemAdapter(BaseAdapter):
         self._running = False
         logger.info("System adapter stopped.")
 
+    def _ensure_running(self) -> None:
+        if not self._running:
+            raise RuntimeError("System adapter is not running.")
+
     def _is_safe_path(self, path: str) -> bool:
         """Validate that path resolves under workspace root."""
         resolved_path = Path(path).expanduser().resolve()
@@ -66,6 +70,7 @@ class SystemAdapter(BaseAdapter):
 
     async def run_app(self, command: str) -> str:
         """Run an allow-listed command only."""
+        self._ensure_running()
         command = command.strip()
         if not command:
             raise PermissionError("Empty command is not allowed.")
@@ -133,17 +138,20 @@ class SystemAdapter(BaseAdapter):
         return output or "(no output)"
 
     def read_file(self, path: str) -> str:
+        self._ensure_running()
         safe_path = self._resolve_safe_path(path)
         if not safe_path.exists() or not safe_path.is_file():
             raise FileNotFoundError(f"File not found: {safe_path}")
         return safe_path.read_text(encoding="utf-8")
 
     def write_file(self, path: str, content: str) -> None:
+        self._ensure_running()
         safe_path = self._resolve_safe_path(path)
         safe_path.parent.mkdir(parents=True, exist_ok=True)
         safe_path.write_text(content, encoding="utf-8")
 
     def list_dir(self, path: str) -> list[str]:
+        self._ensure_running()
         safe_path = self._resolve_safe_path(path)
         if not safe_path.exists() or not safe_path.is_dir():
             raise NotADirectoryError(f"Directory not found: {safe_path}")

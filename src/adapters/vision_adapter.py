@@ -39,8 +39,13 @@ class VisionAdapter(BaseAdapter):
         self._running = False
         logger.info("Vision adapter stopped.")
 
+    def _ensure_running(self) -> None:
+        if not self._running:
+            raise RuntimeError("Vision adapter is not running.")
+
     def take_screenshot(self, filename: str) -> str:
         """Capture and save screenshot to AGENT_WORKSPACE/screenshots/."""
+        self._ensure_running()
         self.screenshots_dir.mkdir(parents=True, exist_ok=True)
         requested = Path(filename)
         if requested.name != filename:
@@ -60,6 +65,7 @@ class VisionAdapter(BaseAdapter):
 
     def ocr_image(self, image_path: str) -> str:
         """OCR stub for future extension."""
+        self._ensure_running()
         _ = image_path
         return "OCR not implemented yet"
 
