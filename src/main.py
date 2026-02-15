@@ -75,6 +75,13 @@ async def main() -> None:
         logger.info("Shutdown requested: %s", reason)
         shutdown_event.set()
 
+    async def start_adapter(name: str, adapter: object) -> None:
+        try:
+            await adapter.start()
+            logger.info("Adapter '%s' started.", name)
+        except Exception:  # noqa: BLE001
+            logger.exception("Adapter '%s' failed to start.", name)
+
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
@@ -87,7 +94,7 @@ async def main() -> None:
 
     try:
         # Per specification: start all adapters concurrently via asyncio.gather
-        await asyncio.gather(*(adapter.start() for adapter in adapters.values()))
+        await asyncio.gather(*(start_adapter(name, adapter) for name, adapter in adapters.items()))
         logger.info("Nano Bot V-2.0 started.")
         await shutdown_event.wait()
     except KeyboardInterrupt:
