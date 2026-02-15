@@ -52,6 +52,7 @@ class TelegramAdapter(BaseAdapter):
         self._app.add_handler(CommandHandler("browser_text", self._handle_browser_text_command))
         self._app.add_handler(CommandHandler("screenshot", self._handle_screenshot_command))
         self._app.add_handler(CommandHandler("ocr", self._handle_ocr_command))
+        self._app.add_handler(MessageHandler(filters.COMMAND, self._handle_unknown_command))
         self._app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text_message)
         )
@@ -141,6 +142,17 @@ class TelegramAdapter(BaseAdapter):
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         command_text = self._compose_command("/ocr", context.args)
+        await self._publish_command_event(update=update, command_text=command_text)
+
+    async def _handle_unknown_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Forward unknown slash commands into the same command pipeline."""
+        if not update.message:
+            return
+        command_text = (update.message.text or "").strip()
+        if not command_text:
+            return
         await self._publish_command_event(update=update, command_text=command_text)
 
     @staticmethod
