@@ -25,6 +25,7 @@ class TelegramAdapter(BaseAdapter):
     SEND_CHUNK_DELAY_SECONDS = 0.15
     BOT_COMMANDS = [
         BotCommand("start", "Запустить Nano Bot"),
+        BotCommand("ping", "Проверить доступность бота"),
         BotCommand("help", "Показать список команд"),
         BotCommand("status", "Показать состояние адаптеров"),
         BotCommand("clear_history", "Очистить историю текущего чата"),
@@ -57,6 +58,7 @@ class TelegramAdapter(BaseAdapter):
 
         self._app = Application.builder().token(self.token).build()
         self._app.add_handler(CommandHandler("start", self._handle_start))
+        self._app.add_handler(CommandHandler("ping", self._handle_ping_command))
         self._app.add_handler(CommandHandler("help", self._handle_help_command))
         self._app.add_handler(CommandHandler("status", self._handle_status_command))
         self._app.add_handler(CommandHandler("clear_history", self._handle_clear_history_command))
@@ -120,6 +122,11 @@ class TelegramAdapter(BaseAdapter):
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         await self._publish_command_event(update=update, command_text="/help")
+
+    async def _handle_ping_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        await self._publish_command_event(update=update, command_text="/ping")
 
     async def _handle_status_command(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE

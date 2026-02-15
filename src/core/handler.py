@@ -20,9 +20,10 @@ logger = logging.getLogger(__name__)
 class CommandHandler:
     """Coordinates incoming commands, LLM processing, and adapter actions."""
     DEFAULT_MAX_COMMAND_LENGTH = 8000
-    NON_PERSISTENT_COMMANDS = {"/help", "/status", "/clear_history"}
+    NON_PERSISTENT_COMMANDS = {"/ping", "/help", "/status", "/clear_history"}
     HELP_TEXT = (
         "Доступные команды:\n"
+        "/ping — проверить доступность бота\n"
         "/help — показать эту справку\n"
         "/status — показать состояние адаптеров\n"
         "/clear_history — очистить историю диалога\n"
@@ -134,6 +135,7 @@ class CommandHandler:
         Handle simple MVP adapter commands.
 
         Supported:
+        - /ping
         - /help
         - /status
         - /clear_history
@@ -143,6 +145,9 @@ class CommandHandler:
         - /screenshot <filename>
         - /ocr <image_path>
         """
+        if command == "/ping":
+            return "pong"
+
         if command == "/help":
             return self.HELP_TEXT
 
