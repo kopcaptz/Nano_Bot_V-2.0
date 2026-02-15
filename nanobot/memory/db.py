@@ -50,6 +50,8 @@ def init_db() -> None:
                 category TEXT NOT NULL,
                 key TEXT NOT NULL,
                 value TEXT NOT NULL,
+                domain TEXT,
+                sub_category TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 UNIQUE(category, key)
@@ -138,36 +140,53 @@ def _fact_vector_id(category: str, key: str) -> str:
     return f"fact::{category}::{key}"
 
 
-def add_fact(category: str, key: str, value: str) -> None:
+def add_fact(
+    category: str,
+    key: str,
+    value: str,
+    domain: str | None = None,
+    sub_category: str | None = None,
+) -> None:
     """Добавляет факт или обновляет значение, если факт уже есть."""
     init_db()
     now = _now_iso()
+    domain_val = domain if domain and str(domain).strip() else None
+    sub_val = sub_category if sub_category and str(sub_category).strip() else None
+
     with _connect() as conn:
         conn.execute(
             """
-            INSERT INTO facts (category, key, value, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO facts (category, key, value, domain, sub_category, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(category, key)
             DO UPDATE SET
                 value = excluded.value,
+                domain = COALESCE(excluded.domain, domain),
+                sub_category = COALESCE(excluded.sub_category, sub_category),
                 updated_at = excluded.updated_at
             """,
-            (category, key, value, now, now),
+            (category, key, value, domain_val, sub_val, now, now),
         )
         conn.commit()
 
     # Синхронизируем факт в ChromaDB для семантического поиска.
     try:
+        text = f"Domain: {domain_val or 'general'}\nКатегория: {category}\nКлюч: {key}\nЗначение: {value}"
+        metadata: dict[str, Any] = {
+            "type": "fact",
+            "category": category,
+            "key": key,
+            "value": value,
+            "updated_at": now,
+        }
+        if domain_val:
+            metadata["domain"] = domain_val
+        if sub_val:
+            metadata["sub_category"] = sub_val
         add_vector_memory(
             memory_id=_fact_vector_id(category, key),
-            text=f"Категория: {category}\nКлюч: {key}\nЗначение: {value}",
-            metadata={
-                "type": "fact",
-                "category": category,
-                "key": key,
-                "value": value,
-                "updated_at": now,
-            },
+            text=text,
+            metadata=metadata,
         )
     except Exception as exc:
         # Векторный индекс не должен ломать SQLite-операции.
@@ -228,6 +247,47 @@ def get_facts_by_category(category: str) -> list[dict[str, Any]]:
     return [_row_to_dict(row) for row in rows]
 
 
+def get_facts_filtered(
+    domain: str | None = None,
+    category: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Возвращает факты с фильтрацией по domain и/или category."""
+    init_db()
+    conditions: list[str] = []
+    params: list[Any] = []
+    if domain:
+        conditions.append("domain = ?")
+        params.append(domain)
+    if category:
+        conditions.append("category = ?")
+        params.append(category)
+
+    where = " AND ".join(conditions) if conditions else "1=1"
+    params.append(limit)
+
+    with _connect() as conn:
+        try:
+            rows = conn.execute(
+                f"SELECT * FROM facts WHERE {where} ORDER BY updated_at DESC LIMIT ?",
+                params,
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # Fallback when domain/sub_category columns don't exist yet
+            if category:
+                rows = conn.execute(
+                    "SELECT * FROM facts WHERE category = ? ORDER BY updated_at DESC LIMIT ?",
+                    (category, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM facts ORDER BY updated_at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+
+    return [_row_to_dict(row) for row in rows]
+
+
 def search_facts(query: str) -> list[dict[str, Any]]:
     """Ищет факты по LIKE в полях category, key и value."""
     init_db()
@@ -273,10 +333,14 @@ def semantic_search(query: str, limit: int = 5) -> list[dict[str, Any]]:
             continue
         seen.add(identity)
 
+        domain_val = str(metadata.get("domain", "")).strip() or None
+        sub_cat = str(metadata.get("sub_category", "")).strip() or None
         results.append(
             {
                 "id": None,
+                "domain": domain_val,
                 "category": category,
+                "sub_category": sub_cat,
                 "key": key,
                 "value": value,
                 "created_at": metadata.get("created_at", ""),
