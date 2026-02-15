@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import logging
 from collections import defaultdict
 from collections.abc import Awaitable, Callable
@@ -32,6 +33,9 @@ class EventBus:
         callbacks = self._subscribers.get(event_type, [])
         logger.info("Event published: %s | subscribers=%d", event_type, len(callbacks))
         for callback in callbacks:
+            if not inspect.iscoroutinefunction(callback):
+                logger.error("Event callback must be async; skipping: %s", callback)
+                continue
             try:
                 result = callback(data)
             except Exception:  # noqa: BLE001
