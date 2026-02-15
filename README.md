@@ -61,6 +61,10 @@ cp .env.example .env
 - `OPENROUTER_MODEL`
 - `LLM_CONTEXT_MAX_MESSAGES` (опционально, по умолчанию `40`)
 - `MEMORY_MAX_MESSAGES` (опционально, по умолчанию `200`)
+- `LLM_REQUEST_TIMEOUT_SECONDS` (опционально, по умолчанию `45`)
+- `SYSTEM_COMMAND_TIMEOUT_SECONDS` (опционально, по умолчанию `20`)
+- `ADAPTER_START_TIMEOUT_SECONDS` (опционально, по умолчанию `20`)
+- `ADAPTER_STOP_TIMEOUT_SECONDS` (опционально, по умолчанию `10`)
 - `AGENT_WORKSPACE`
 - `LOG_LEVEL`
 

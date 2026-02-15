@@ -28,8 +28,6 @@ except ModuleNotFoundError:  # package mode: import src.main
     from src.core.memory import CrystalMemory
 
 logger = logging.getLogger(__name__)
-START_TIMEOUT_SECONDS = 20.0
-STOP_TIMEOUT_SECONDS = 10.0
 
 
 async def main() -> None:
@@ -41,11 +39,15 @@ async def main() -> None:
     llm_router = LLMRouter(
         api_key=config.openrouter_api_key,
         model=config.openrouter_model,
+        request_timeout_seconds=config.llm_request_timeout_seconds,
         max_context_messages=config.llm_context_max_messages,
     )
 
     telegram_adapter = TelegramAdapter(event_bus=event_bus, token=config.telegram_bot_token)
-    system_adapter = SystemAdapter(workspace=config.agent_workspace)
+    system_adapter = SystemAdapter(
+        workspace=config.agent_workspace,
+        command_timeout=config.system_command_timeout_seconds,
+    )
     browser_adapter = BrowserAdapter()
     vision_adapter = VisionAdapter(workspace=config.agent_workspace)
 
@@ -80,7 +82,7 @@ async def main() -> None:
 
     async def start_adapter(name: str, adapter: object) -> bool:
         try:
-            await asyncio.wait_for(adapter.start(), timeout=START_TIMEOUT_SECONDS)
+            await asyncio.wait_for(adapter.start(), timeout=config.adapter_start_timeout_seconds)
             is_running = bool(getattr(adapter, "is_running", getattr(adapter, "_running", True)))
             if is_running:
                 logger.info("Adapter '%s' started.", name)
@@ -89,10 +91,12 @@ async def main() -> None:
             return is_running
         except asyncio.TimeoutError:
             logger.error(
-                "Adapter '%s' start timed out after %.1fs", name, START_TIMEOUT_SECONDS
+                "Adapter '%s' start timed out after %.1fs",
+                name,
+                config.adapter_start_timeout_seconds,
             )
             try:
-                await asyncio.wait_for(adapter.stop(), timeout=STOP_TIMEOUT_SECONDS)
+                await asyncio.wait_for(adapter.stop(), timeout=config.adapter_stop_timeout_seconds)
             except Exception:  # noqa: BLE001
                 logger.exception("Adapter '%s' cleanup after start timeout failed.", name)
             return False
@@ -103,11 +107,13 @@ async def main() -> None:
     async def stop_adapter(name: str, adapter: object) -> None:
         """Stop adapter with timeout guard to avoid hanging shutdown."""
         try:
-            await asyncio.wait_for(adapter.stop(), timeout=STOP_TIMEOUT_SECONDS)
+            await asyncio.wait_for(adapter.stop(), timeout=config.adapter_stop_timeout_seconds)
             logger.info("Adapter '%s' stopped.", name)
         except asyncio.TimeoutError:
             logger.error(
-                "Adapter '%s' stop timed out after %.1fs", name, STOP_TIMEOUT_SECONDS
+                "Adapter '%s' stop timed out after %.1fs",
+                name,
+                config.adapter_stop_timeout_seconds,
             )
         except Exception:  # noqa: BLE001
             logger.exception("Adapter '%s' failed during stop.", name)

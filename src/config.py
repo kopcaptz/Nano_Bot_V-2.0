@@ -20,6 +20,10 @@ class Config:
     openrouter_model: str
     llm_context_max_messages: int
     memory_max_messages: int
+    llm_request_timeout_seconds: float
+    system_command_timeout_seconds: float
+    adapter_start_timeout_seconds: float
+    adapter_stop_timeout_seconds: float
     agent_workspace: Path
     log_level: str
 
@@ -65,6 +69,21 @@ def _parse_positive_int(raw_value: str | None, default: int, name: str) -> int:
     return parsed
 
 
+def _parse_positive_float(raw_value: str | None, default: float, name: str) -> float:
+    """Parse positive float config value with safe fallback."""
+    if raw_value is None or not raw_value.strip():
+        return default
+    try:
+        parsed = float(raw_value.strip())
+    except ValueError:
+        logging.warning("%s must be float. Using default: %.1f", name, default)
+        return default
+    if parsed <= 0:
+        logging.warning("%s must be > 0. Using default: %.1f", name, default)
+        return default
+    return parsed
+
+
 def load_config() -> Config:
     """Load config values from .env and validate critical paths/settings."""
     load_dotenv()
@@ -102,6 +121,26 @@ def load_config() -> Config:
         default=200,
         name="MEMORY_MAX_MESSAGES",
     )
+    llm_request_timeout_seconds = _parse_positive_float(
+        os.getenv("LLM_REQUEST_TIMEOUT_SECONDS"),
+        default=45.0,
+        name="LLM_REQUEST_TIMEOUT_SECONDS",
+    )
+    system_command_timeout_seconds = _parse_positive_float(
+        os.getenv("SYSTEM_COMMAND_TIMEOUT_SECONDS"),
+        default=20.0,
+        name="SYSTEM_COMMAND_TIMEOUT_SECONDS",
+    )
+    adapter_start_timeout_seconds = _parse_positive_float(
+        os.getenv("ADAPTER_START_TIMEOUT_SECONDS"),
+        default=20.0,
+        name="ADAPTER_START_TIMEOUT_SECONDS",
+    )
+    adapter_stop_timeout_seconds = _parse_positive_float(
+        os.getenv("ADAPTER_STOP_TIMEOUT_SECONDS"),
+        default=10.0,
+        name="ADAPTER_STOP_TIMEOUT_SECONDS",
+    )
 
     return Config(
         telegram_bot_token=telegram_token,
@@ -109,6 +148,10 @@ def load_config() -> Config:
         openrouter_model=openrouter_model,
         llm_context_max_messages=llm_context_max_messages,
         memory_max_messages=memory_max_messages,
+        llm_request_timeout_seconds=llm_request_timeout_seconds,
+        system_command_timeout_seconds=system_command_timeout_seconds,
+        adapter_start_timeout_seconds=adapter_start_timeout_seconds,
+        adapter_stop_timeout_seconds=adapter_stop_timeout_seconds,
         agent_workspace=workspace_path,
         log_level=log_level,
     )
