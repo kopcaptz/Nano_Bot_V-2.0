@@ -21,8 +21,6 @@ class LLMRouter:
             api_key=self.api_key,
             base_url="https://openrouter.ai/api/v1",
         )
-        if not self.api_key:
-            logger.warning("OPENROUTER_API_KEY is empty. LLM requests will fail.")
 
     async def process_command(self, command: str, context: list[dict]) -> str:
         """Send user command + context to OpenRouter and return plain text response."""
