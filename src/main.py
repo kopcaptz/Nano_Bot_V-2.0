@@ -62,6 +62,7 @@ async def main() -> None:
         event_bus=event_bus,
         llm_router=llm_router,
         memory=memory,
+        max_command_length=config.handler_max_command_length,
         telegram=telegram_adapter,
         system=system_adapter,
         browser=browser_adapter,

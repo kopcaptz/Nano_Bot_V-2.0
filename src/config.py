@@ -20,6 +20,7 @@ class Config:
     openrouter_model: str
     llm_context_max_messages: int
     memory_max_messages: int
+    handler_max_command_length: int
     llm_request_timeout_seconds: float
     system_command_timeout_seconds: float
     adapter_start_timeout_seconds: float
@@ -121,6 +122,11 @@ def load_config() -> Config:
         default=200,
         name="MEMORY_MAX_MESSAGES",
     )
+    handler_max_command_length = _parse_positive_int(
+        os.getenv("HANDLER_MAX_COMMAND_LENGTH"),
+        default=8000,
+        name="HANDLER_MAX_COMMAND_LENGTH",
+    )
     llm_request_timeout_seconds = _parse_positive_float(
         os.getenv("LLM_REQUEST_TIMEOUT_SECONDS"),
         default=45.0,
@@ -148,6 +154,7 @@ def load_config() -> Config:
         openrouter_model=openrouter_model,
         llm_context_max_messages=llm_context_max_messages,
         memory_max_messages=memory_max_messages,
+        handler_max_command_length=handler_max_command_length,
         llm_request_timeout_seconds=llm_request_timeout_seconds,
         system_command_timeout_seconds=system_command_timeout_seconds,
         adapter_start_timeout_seconds=adapter_start_timeout_seconds,

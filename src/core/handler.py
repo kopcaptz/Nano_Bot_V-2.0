@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 class CommandHandler:
     """Coordinates incoming commands, LLM processing, and adapter actions."""
-    MAX_COMMAND_LENGTH = 8000
+    DEFAULT_MAX_COMMAND_LENGTH = 8000
     NON_PERSISTENT_COMMANDS = {"/help", "/status", "/clear_history"}
     HELP_TEXT = (
         "Доступные команды:\n"
@@ -38,12 +38,14 @@ class CommandHandler:
         event_bus: EventBus,
         llm_router: LLMRouter,
         memory: CrystalMemory,
+        max_command_length: int | None = None,
         **adapters: Any,
     ) -> None:
         self.event_bus = event_bus
         self.llm_router = llm_router
         self.memory = memory
         self.adapters = adapters
+        self.max_command_length = max_command_length or self.DEFAULT_MAX_COMMAND_LENGTH
         self._initialized = False
 
     async def initialize(self) -> None:
@@ -80,14 +82,14 @@ class CommandHandler:
                 {"chat_id": chat_id, "text": "Пустая команда. Отправьте текстовый запрос."},
             )
             return
-        if len(normalized_command) > self.MAX_COMMAND_LENGTH:
+        if len(normalized_command) > self.max_command_length:
             await self.event_bus.publish(
                 "telegram.send.reply",
                 {
                     "chat_id": chat_id,
                     "text": (
                         f"Команда слишком длинная ({len(normalized_command)} символов). "
-                        f"Максимум: {self.MAX_COMMAND_LENGTH}."
+                        f"Максимум: {self.max_command_length}."
                     ),
                 },
             )
@@ -255,6 +257,7 @@ class CommandHandler:
         memory_limit = getattr(self.memory, "max_messages_per_chat", None)
         if isinstance(memory_limit, int):
             lines.append(f"🧠 memory limit: {memory_limit}")
+        lines.append(f"🧾 max command length: {self.max_command_length}")
         return "\n".join(lines)
 
     @staticmethod
