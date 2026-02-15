@@ -333,10 +333,14 @@ def semantic_search(query: str, limit: int = 5) -> list[dict[str, Any]]:
             continue
         seen.add(identity)
 
+        domain_val = str(metadata.get("domain", "")).strip() or None
+        sub_cat = str(metadata.get("sub_category", "")).strip() or None
         results.append(
             {
                 "id": None,
+                "domain": domain_val,
                 "category": category,
+                "sub_category": sub_cat,
                 "key": key,
                 "value": value,
                 "created_at": metadata.get("created_at", ""),

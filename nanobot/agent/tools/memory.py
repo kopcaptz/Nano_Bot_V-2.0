@@ -15,9 +15,10 @@ class MemorySearchTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Search for facts in your memory. You can filter by domain, category, "
-            "or perform a semantic search using a natural language query. "
-            "Use this to recall user preferences, project details, or past decisions."
+            "Search the agent's structured long-term memory for facts. "
+            "Use this when you need to recall specific information about the user, "
+            "past conversations, or learned knowledge. "
+            "You can filter by domain (broad area) and/or category (specific topic)."
         )
 
     @property
@@ -27,79 +28,71 @@ class MemorySearchTool(Tool):
             "properties": {
                 "query": {
                     "type": "string",
-                    "description": "Natural language query for semantic search across all facts.",
+                    "description": "Natural language query describing what you're looking for",
                 },
                 "domain": {
                     "type": "string",
-                    "description": "Filter by domain (e.g., 'User Preferences', 'Project: Nano Bot').",
+                    "description": "Optional: filter by domain (e.g., 'User Preferences', 'Project: Nano Bot', 'Personal')",
                 },
                 "category": {
                     "type": "string",
-                    "description": "Filter by category (e.g., 'Architecture', 'Hobbies').",
+                    "description": "Optional: filter by category (e.g., 'Architecture', 'Hobbies', 'Communication')",
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum number of results to return (default 10).",
+                    "description": "Maximum number of results to return (default: 5)",
+                    "default": 5,
                 },
             },
+            "required": ["query"],
         }
 
     async def execute(
         self,
-        query: str | None = None,
+        query: str,
         domain: str | None = None,
         category: str | None = None,
-        limit: int = 10,
+        limit: int = 5,
         **kwargs: Any,
     ) -> str:
-        from nanobot.memory.db import get_facts_filtered, search_facts, semantic_search
+        from nanobot.memory.db import get_facts_filtered, semantic_search
+
+        limit_val = max(1, min(limit or 5, 50))
+        domain_opt = domain if domain and str(domain).strip() else None
+        category_opt = category if category and str(category).strip() else None
 
         results: list[dict[str, Any]] = []
-        limit_val = max(1, min(limit, 50))
 
-        # Semantic search when query is provided
-        if query:
-            try:
-                hits = semantic_search(query, limit=limit_val)
-                results.extend(hits)
-            except Exception:
-                # Fallback to text search
-                hits = search_facts(query)
-                results.extend(hits[:limit_val])
-
-        # Filtering by domain/category
-        if domain or category:
-            filtered = get_facts_filtered(
-                domain=domain if domain and str(domain).strip() else None,
-                category=category if category and str(category).strip() else None,
-                limit=limit_val,
-            )
-            # Add only facts not already in results
-            existing_keys = {(r.get("category", ""), r.get("key", "")) for r in results}
-            for f in filtered:
-                if (f.get("category", ""), f.get("key", "")) not in existing_keys:
-                    results.append(f)
-                    existing_keys.add((f.get("category", ""), f.get("key", "")))
-                if len(results) >= limit_val:
-                    break
-
-        if not query and not domain and not category:
-            return "Error: At least one parameter (query, domain, or category) must be provided."
+        try:
+            if domain_opt or category_opt:
+                # Filtered search by domain and/or category
+                results = get_facts_filtered(
+                    domain=domain_opt,
+                    category=category_opt,
+                    limit=limit_val,
+                )
+            else:
+                # Vector/semantic search
+                results = semantic_search(query, limit=limit_val)
+        except Exception as exc:
+            return f"Error searching memory: {exc}"
 
         if not results:
-            return "No facts found matching your search criteria."
+            return "No facts found matching your query."
 
         # Format results
-        lines = [f"Found {len(results)} fact(s):\n"]
+        lines = [f"Found {len(results)} facts:\n"]
         for i, fact in enumerate(results[:limit_val], 1):
-            d = fact.get("domain") or "—"
+            d = fact.get("domain") or "general"
             c = fact.get("category", "—")
+            sub = fact.get("sub_category") or ""
             k = fact.get("key", "—")
             v = fact.get("value", "—")
-            dist = fact.get("distance")
-            line = f"{i}. [{d}] {c} → {k}: {v}"
-            if dist is not None:
-                line += f" (relevance: {1 - dist:.2f})"
+
+            if sub and str(sub).strip():
+                line = f"{i}. [Domain: {d}] {c} > {sub} > {k}: {v}"
+            else:
+                line = f"{i}. [Domain: {d}] {c} > {k}: {v}"
             lines.append(line)
 
         return "\n".join(lines)
