@@ -237,6 +237,13 @@ class CommandHandler:
             "🚌 bus event types: "
             + (", ".join(event_types) if event_types else "(none)")
         )
+        model_name = getattr(self.llm_router, "model", "unknown")
+        lines.append(f"🤖 model: {model_name}")
+
+        system_adapter = self.adapters.get("system")
+        workspace_path = getattr(system_adapter, "workspace", None)
+        if workspace_path is not None:
+            lines.append(f"📂 workspace: {workspace_path}")
         return "\n".join(lines)
 
     @staticmethod
