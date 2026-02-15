@@ -177,6 +177,7 @@ class SystemAdapter(BaseAdapter):
         return sorted(item.name for item in safe_path.iterdir())
 
     def get_clipboard(self) -> str:
+        self._ensure_running()
         try:
             return pyperclip.paste()
         except pyperclip.PyperclipException as exc:
@@ -184,6 +185,7 @@ class SystemAdapter(BaseAdapter):
             return ""
 
     def set_clipboard(self, content: str) -> None:
+        self._ensure_running()
         try:
             pyperclip.copy(content)
         except pyperclip.PyperclipException as exc:
