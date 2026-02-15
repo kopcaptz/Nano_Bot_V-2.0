@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from telegram import Update
+from telegram import BotCommand, Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
 try:  # script mode
@@ -21,6 +21,17 @@ logger = logging.getLogger(__name__)
 class TelegramAdapter(BaseAdapter):
     """Telegram channel adapter."""
     MAX_MESSAGE_LENGTH = 4000
+    BOT_COMMANDS = [
+        BotCommand("start", "Запустить Nano Bot"),
+        BotCommand("help", "Показать список команд"),
+        BotCommand("status", "Показать состояние адаптеров"),
+        BotCommand("clear_history", "Очистить историю текущего чата"),
+        BotCommand("system", "Выполнить безопасную системную команду"),
+        BotCommand("browser_open", "Открыть URL в браузере"),
+        BotCommand("browser_text", "Получить текст страницы"),
+        BotCommand("screenshot", "Сделать скриншот"),
+        BotCommand("ocr", "Запустить OCR (заглушка)"),
+    ]
 
     def __init__(self, event_bus: EventBus, token: str) -> None:
         self.event_bus = event_bus
@@ -60,6 +71,10 @@ class TelegramAdapter(BaseAdapter):
         logger.info("Starting Telegram adapter...")
         await self._app.initialize()
         await self._app.start()
+        try:
+            await self._app.bot.set_my_commands(self.BOT_COMMANDS)
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to register telegram bot commands.")
         await self._app.updater.start_polling(drop_pending_updates=True)
         self._running = True
         logger.info("Telegram adapter started.")
