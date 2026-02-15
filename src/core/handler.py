@@ -23,6 +23,7 @@ class CommandHandler:
     HELP_TEXT = (
         "Доступные команды:\n"
         "/help — показать эту справку\n"
+        "/status — показать состояние адаптеров\n"
         "/clear_history — очистить историю диалога\n"
         "/system <cmd> — выполнить безопасную системную команду\n"
         "/browser_open <url> — открыть страницу\n"
@@ -107,6 +108,7 @@ class CommandHandler:
 
         Supported:
         - /help
+        - /status
         - /clear_history
         - /system <cmd>
         - /browser_open <url>
@@ -115,6 +117,9 @@ class CommandHandler:
         """
         if command == "/help":
             return self.HELP_TEXT
+
+        if command == "/status":
+            return self._build_status_text(chat_id)
 
         if command == "/clear_history":
             self.memory.clear_history(chat_id)
@@ -157,4 +162,16 @@ class CommandHandler:
             return f"Скриншот сохранён: {saved}"
 
         return None
+
+    def _build_status_text(self, chat_id: int) -> str:
+        """Build human-readable status text for adapters and memory."""
+        lines = ["Статус Nano Bot V-2.0:"]
+        for name, adapter in self.adapters.items():
+            running = bool(getattr(adapter, "is_running", getattr(adapter, "_running", False)))
+            marker = "✅" if running else "⚪"
+            lines.append(f"{marker} {name}: {'running' if running else 'stopped'}")
+
+        history_size = len(self.memory.get_history(chat_id))
+        lines.append(f"🧠 history messages: {history_size}")
+        return "\n".join(lines)
 
