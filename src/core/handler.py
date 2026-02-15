@@ -241,11 +241,17 @@ class CommandHandler:
         context_limit = getattr(self.llm_router, "max_context_messages", None)
         if isinstance(context_limit, int):
             lines.append(f"🧠 llm context limit: {context_limit}")
+        request_timeout = getattr(self.llm_router, "request_timeout_seconds", None)
+        if isinstance(request_timeout, (int, float)):
+            lines.append(f"⏱ llm request timeout: {float(request_timeout):.1f}s")
 
         system_adapter = self.adapters.get("system")
         workspace_path = getattr(system_adapter, "workspace", None)
         if workspace_path is not None:
             lines.append(f"📂 workspace: {workspace_path}")
+        system_timeout = getattr(system_adapter, "command_timeout", None)
+        if isinstance(system_timeout, (int, float)):
+            lines.append(f"⏱ system command timeout: {float(system_timeout):.1f}s")
         memory_limit = getattr(self.memory, "max_messages_per_chat", None)
         if isinstance(memory_limit, int):
             lines.append(f"🧠 memory limit: {memory_limit}")
