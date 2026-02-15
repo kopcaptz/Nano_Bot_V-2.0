@@ -21,6 +21,9 @@ class EventBus:
 
     async def subscribe(self, event_type: str, callback: EventCallback) -> None:
         """Register callback for an event type."""
+        if callback in self._subscribers[event_type]:
+            logger.debug("Subscriber already exists for event '%s'.", event_type)
+            return
         self._subscribers[event_type].append(callback)
         logger.debug("Subscriber added for event '%s'.", event_type)
 
@@ -29,7 +32,17 @@ class EventBus:
         callbacks = self._subscribers.get(event_type, [])
         logger.info("Event published: %s | subscribers=%d", event_type, len(callbacks))
         for callback in callbacks:
-            task = asyncio.create_task(callback(data))
+            try:
+                result = callback(data)
+            except Exception:  # noqa: BLE001
+                logger.exception("Event callback raised before scheduling: %s", callback)
+                continue
+
+            if not asyncio.iscoroutine(result):
+                logger.error("Event callback is not async and cannot be scheduled: %s", callback)
+                continue
+
+            task = asyncio.create_task(result)
             task.add_done_callback(self._log_task_error)
 
     @staticmethod
