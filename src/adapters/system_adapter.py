@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import re
 import shlex
 from pathlib import Path
 
@@ -21,6 +23,7 @@ class SystemAdapter(BaseAdapter):
     """Adapter for interacting with local OS in a restricted way."""
 
     SAFE_COMMANDS = {"dir", "tasklist", "ping", "echo"}
+    SHELL_META_PATTERN = re.compile(r"(?:&&|\|\||[;|<>`]|[$][(])")
 
     def __init__(self, workspace: Path) -> None:
         self.workspace = workspace
@@ -41,7 +44,10 @@ class SystemAdapter(BaseAdapter):
         return str(resolved_path).startswith(str(self.workspace.resolve()))
 
     def _resolve_safe_path(self, path: str) -> Path:
-        resolved = Path(path).expanduser().resolve()
+        candidate = Path(path).expanduser()
+        if not candidate.is_absolute():
+            candidate = self.workspace / candidate
+        resolved = candidate.resolve()
         if not self._is_safe_path(str(resolved)):
             raise PermissionError(f"Unsafe path (outside workspace): {path}")
         return resolved
@@ -52,19 +58,36 @@ class SystemAdapter(BaseAdapter):
         if not command:
             raise PermissionError("Empty command is not allowed.")
 
-        parts = shlex.split(command)
+        if self.SHELL_META_PATTERN.search(command):
+            raise PermissionError("Command contains forbidden shell operators.")
+
+        parts = shlex.split(command, posix=(os.name != "nt"))
         executable = parts[0].lower() if parts else ""
         if executable not in self.SAFE_COMMANDS:
             raise PermissionError(
                 f"Command '{executable}' is not allowed. Allowed: {sorted(self.SAFE_COMMANDS)}"
             )
 
-        process = await asyncio.create_subprocess_shell(
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=self.workspace,
-        )
+        try:
+            if os.name == "nt":
+                process = await asyncio.create_subprocess_exec(
+                    "cmd",
+                    "/c",
+                    *parts,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=self.workspace,
+                )
+            else:
+                process = await asyncio.create_subprocess_exec(
+                    *parts,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=self.workspace,
+                )
+        except FileNotFoundError:
+            return f"Command not found: {executable}"
+
         stdout, stderr = await process.communicate()
         output = stdout.decode("utf-8", errors="replace").strip()
         err = stderr.decode("utf-8", errors="replace").strip()

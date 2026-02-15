@@ -36,7 +36,12 @@ class VisionAdapter(BaseAdapter):
     def take_screenshot(self, filename: str) -> str:
         """Capture and save screenshot to AGENT_WORKSPACE/screenshots/."""
         self.screenshots_dir.mkdir(parents=True, exist_ok=True)
-        output_path = self.screenshots_dir / filename
+        requested = Path(filename)
+        if requested.name != filename:
+            raise PermissionError("Filename must not include directory traversal.")
+        output_path = (self.screenshots_dir / requested.name).resolve()
+        if not str(output_path).startswith(str(self.screenshots_dir.resolve())):
+            raise PermissionError("Screenshot path is outside screenshots directory.")
 
         with mss.mss() as sct:
             monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
