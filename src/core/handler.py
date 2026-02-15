@@ -122,7 +122,11 @@ class CommandHandler:
             logger.exception("Command processing failed")
             reply_text = "Не удалось обработать команду из-за внутренней ошибки."
 
-        if normalized_command not in self.NON_PERSISTENT_COMMANDS:
+        should_persist = (
+            normalized_command not in self.NON_PERSISTENT_COMMANDS
+            and not normalized_command.startswith("/")
+        )
+        if should_persist:
             self.memory.add_message(chat_id, "user", normalized_command)
             self.memory.add_message(chat_id, "assistant", reply_text)
         await self.event_bus.publish(
