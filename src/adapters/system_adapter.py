@@ -157,3 +157,108 @@ class SystemAdapter(BaseAdapter):
         except pyperclip.PyperclipException as exc:
             logger.warning("Clipboard write failed: %s", exc)
 
+    def delete_file(self, path: str) -> None:
+        safe_path = self._resolve_safe_path(path)
+        if not safe_path.exists():
+            raise FileNotFoundError(f"File not found: {safe_path}")
+        if safe_path.is_dir():
+            raise IsADirectoryError(f"Cannot delete directory: {safe_path}")
+        safe_path.unlink()
+
+    def get_tool_definitions(self) -> list[dict]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "list_dir",
+                    "description": "List files and directories in a path within the workspace.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Relative path from workspace root. Use '.' for root."}
+                        },
+                        "required": ["path"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "read_file",
+                    "description": "Read the content of a file within the workspace.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Relative path to the file."}
+                        },
+                        "required": ["path"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "write_file",
+                    "description": "Write content to a file within the workspace.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Relative path to the file."},
+                            "content": {"type": "string", "description": "Content to write."},
+                        },
+                        "required": ["path", "content"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "delete_file",
+                    "description": "Delete a file within the workspace.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string", "description": "Relative path to the file."}
+                        },
+                        "required": ["path"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "run_app",
+                    "description": "Run a system command. Use with caution.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": {"type": "string", "description": "The command to execute."}
+                        },
+                        "required": ["command"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_clipboard",
+                    "description": "Get the current system clipboard content.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "set_clipboard",
+                    "description": "Set the system clipboard content.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "content": {"type": "string", "description": "Text to place in clipboard."}
+                        },
+                        "required": ["content"],
+                    },
+                },
+            },
+        ]
+

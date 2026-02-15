@@ -63,3 +63,35 @@ class VisionAdapter(BaseAdapter):
         _ = image_path
         return "OCR not implemented yet"
 
+    def get_tool_definitions(self) -> list[dict]:
+        return [
+            {
+                "type": "function",
+                "function": {
+                    "name": "take_screenshot",
+                    "description": "Capture the screen and save to a file.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "filename": {"type": "string", "description": "Filename for the screenshot (e.g. 'screen.png')."}
+                        },
+                        "required": ["filename"],
+                    },
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "ocr_image",
+                    "description": "Perform OCR on an image file.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "image_path": {"type": "string", "description": "Path to the image file."}
+                        },
+                        "required": ["image_path"],
+                    },
+                },
+            },
+        ]
+

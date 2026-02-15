@@ -1,90 +1,72 @@
-"""OpenRouter LLM integration layer."""
-
+"""LLM routing and interaction layer for Nano Bot V-2.0."""
 from __future__ import annotations
 
 import logging
+from typing import Any
 
-import openai
 from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
 
 class LLMRouter:
-    """Route commands to OpenRouter models."""
+    """Handles communication with the LLM provider (OpenRouter)."""
 
-    def __init__(self, api_key: str, model: str, request_timeout_seconds: float = 45.0) -> None:
-        self.api_key = api_key
-        self.model = model
-        self.request_timeout_seconds = request_timeout_seconds
+    def __init__(self, api_key: str, model: str) -> None:
+        if not api_key:
+            raise ValueError("OpenRouter API key is not set.")
         self.client = AsyncOpenAI(
-            api_key=self.api_key,
             base_url="https://openrouter.ai/api/v1",
+            api_key=api_key,
         )
+        self.model = model
 
-    async def process_command(self, command: str, context: list[dict]) -> str:
-        """Send user command + context to OpenRouter and return plain text response."""
-        if not self.api_key:
-            return "OPENROUTER_API_KEY не задан. Добавьте ключ в .env."
+    async def process_command(
+        self,
+        command: str,
+        context: list[dict[str, Any]],
+        tools: list[dict] | None = None,
+        messages_override: list[dict] | None = None,
+    ) -> dict[str, Any]:
+        """Send command to LLM and get a response, optionally with tools."""
+        if messages_override:
+            messages = messages_override
+        else:
+            messages = [*context, {"role": "user", "content": command}]
 
-        messages: list[dict[str, str]] = [
-            {
-                "role": "system",
-                "content": (
-                    "You are Nano Bot V-2.0, a local system assistant. "
-                    "Use context to answer coherently and concisely."
-                ),
-            }
-        ]
-        for item in context:
-            role = item.get("role")
-            content = item.get("content")
-            if isinstance(role, str) and isinstance(content, str):
-                messages.append({"role": role, "content": content})
-
-        messages.append({"role": "user", "content": command})
+        kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+        }
+        if tools:
+            kwargs["tools"] = tools
+            kwargs["tool_choice"] = "auto"
 
         try:
-            completion = await self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                timeout=self.request_timeout_seconds,
-            )
-            content = completion.choices[0].message.content
-            text = self._normalize_text_content(content)
-            return text or "LLM вернул пустой ответ."
-        except openai.RateLimitError:
-            logger.exception("OpenRouter rate limit exceeded")
-            return "Сервис LLM временно перегружен (rate limit). Попробуйте чуть позже."
-        except openai.APITimeoutError:
-            logger.exception("OpenRouter timeout")
-            return "LLM не ответил вовремя. Повторите запрос."
-        except openai.APIError:
-            logger.exception("OpenRouter API error")
-            return "Произошла ошибка API при обращении к LLM. Попробуйте снова."
-        except Exception:  # noqa: BLE001
-            logger.exception("Unexpected error while calling OpenRouter")
-            return "Неожиданная ошибка при обращении к LLM. Попробуйте позже."
+            response = await self.client.chat.completions.create(**kwargs)
+            return response.choices[0].message.model_dump()
+        except Exception as e:
+            logger.exception("Error communicating with LLM provider.")
+            return {
+                "role": "assistant",
+                "content": f"Error: Could not get response from LLM. {e}",
+            }
 
     @staticmethod
-    def _normalize_text_content(content: object) -> str:
-        """Normalize OpenAI response content into a plain text string."""
+    def extract_text(content: Any) -> str:
+        """Safely extract text from LLM response content."""
         if isinstance(content, str):
-            return content.strip()
-
+            return content
         if isinstance(content, list):
-            text_chunks: list[str] = []
+            chunks = []
             for item in content:
                 if isinstance(item, dict):
-                    maybe_text = item.get("text")
-                    if isinstance(maybe_text, str):
-                        text_chunks.append(maybe_text)
-                    continue
-
-                maybe_text_attr = getattr(item, "text", None)
-                if isinstance(maybe_text_attr, str):
-                    text_chunks.append(maybe_text_attr)
-            return "\n".join(chunk.strip() for chunk in text_chunks if chunk.strip())
-
+                    t = item.get("text")
+                    if isinstance(t, str):
+                        chunks.append(t)
+                else:
+                    t = getattr(item, "text", None)
+                    if isinstance(t, str):
+                        chunks.append(t)
+            return "\n".join(c.strip() for c in chunks if c.strip())
         return ""
-

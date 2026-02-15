@@ -1,127 +1,183 @@
-"""Central command coordinator for Nano Bot V-2.0."""
-
+"""Central command coordinator for Nano Bot V-2.0 (Tool-Using Agent)."""
 from __future__ import annotations
 
+import json
 import logging
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
-try:  # script mode: python src/main.py
+try:
     from core.event_bus import EventBus
     from core.llm_router import LLMRouter
     from core.memory import CrystalMemory
-except ModuleNotFoundError:  # package mode: import src.main
+except ModuleNotFoundError:
     from src.core.event_bus import EventBus
     from src.core.llm_router import LLMRouter
     from src.core.memory import CrystalMemory
 
+if TYPE_CHECKING:
+    from src.core.tool_registry import ToolRegistry
+
 logger = logging.getLogger(__name__)
+
+MAX_AGENT_ITERATIONS = 5
 
 
 class CommandHandler:
-    """Coordinates incoming commands, LLM processing, and adapter actions."""
+    """Coordinates incoming commands, LLM processing, and tool execution."""
 
     def __init__(
         self,
         event_bus: EventBus,
         llm_router: LLMRouter,
         memory: CrystalMemory,
+        tool_registry: ToolRegistry,
         **adapters: Any,
     ) -> None:
         self.event_bus = event_bus
         self.llm_router = llm_router
         self.memory = memory
-        self.adapters = adapters
+        self.tool_registry = tool_registry
+        self.system = adapters.get("system")
+        self.browser = adapters.get("browser")
+        self.vision = adapters.get("vision")
 
     async def initialize(self) -> None:
-        """Register handler subscriptions on the event bus."""
-        await self.event_bus.subscribe("telegram.command.received", self.handle_command)
+        """Subscribe to relevant events."""
+        await self.event_bus.subscribe(
+            "telegram.command.received", self.handle_command
+        )
+
+    def _build_system_prompt(self) -> str:
+        """Build the dynamic system prompt with all available tools."""
+        tool_names = ", ".join(self.tool_registry.get_tool_names())
+        return (
+            "You are Nano Bot — a helpful AI assistant running locally on the user's Windows machine. "
+            "You have real tools to interact with the system: manage files, run commands, open browser, "
+            "take screenshots, search Gmail, and more.\n\n"
+            "IMPORTANT RULES:\n"
+            "1. When the user asks to DO something (create file, check email, open browser), "
+            "you MUST use the appropriate tool. Do NOT just describe what you would do.\n"
+            "2. You can chain multiple tool calls in sequence.\n"
+            "3. If a tool returns an error, explain it to the user and suggest alternatives.\n"
+            "4. For simple conversation (greetings, questions), respond normally without tools.\n\n"
+            f"Available tools: {tool_names}"
+        )
+
+    async def _agent_loop(self, command: str, chat_id: int) -> str:
+        """The main agent loop: Think -> Act -> Observe -> Repeat."""
+        system_prompt = self._build_system_prompt()
+        history = self.memory.get_history(chat_id)
+
+        messages = [
+            {"role": "system", "content": system_prompt},
+            *history,
+            {"role": "user", "content": command},
+        ]
+
+        tools = self.tool_registry.get_tools_for_llm()
+
+        for iteration in range(MAX_AGENT_ITERATIONS):
+            logger.info("Agent loop iteration %d for chat %d", iteration + 1, chat_id)
+
+            llm_response = await self.llm_router.process_command(
+                command="",
+                context=[],
+                tools=tools,
+                messages_override=messages,
+            )
+
+            tool_calls = llm_response.get("tool_calls")
+
+            # No tool calls — this is the final text answer
+            if not tool_calls:
+                return LLMRouter.extract_text(llm_response.get("content", ""))
+
+            # Append assistant message with tool_calls to conversation
+            messages.append(llm_response)
+
+            # Execute each tool call
+            for tc in tool_calls:
+                fn = tc.get("function", {})
+                tool_name = fn.get("name", "")
+                raw_args = fn.get("arguments", "{}")
+
+                try:
+                    params = json.loads(raw_args)
+                except json.JSONDecodeError:
+                    tool_result = f"Error: Could not parse tool arguments: {raw_args}"
+                else:
+                    tool_result = await self.tool_registry.dispatch(tool_name, params)
+
+                # Ensure tool_result is a string
+                if not isinstance(tool_result, str):
+                    tool_result = str(tool_result)
+
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": tool_result,
+                })
+
+        # Max iterations reached — ask LLM for a final summary
+        messages.append({
+            "role": "user",
+            "content": "Please summarize what you have done so far.",
+        })
+        final = await self.llm_router.process_command(
+            command="", context=[], messages_override=messages
+        )
+        return LLMRouter.extract_text(final.get("content", ""))
+
+    async def _try_shortcuts(self, command: str) -> str | None:
+        """Handle slash commands that bypass the LLM."""
+        parts = command.strip().split()
+        if not parts:
+            return None
+        cmd, args = parts[0], parts[1:]
+
+        try:
+            if cmd == "/system" and args and self.system:
+                return await self.system.run_app(" ".join(args))
+            if cmd == "/browser_open" and args and self.browser:
+                await self.browser.open_url(args[0])
+                return f"Opened: {args[0]}"
+            if cmd == "/browser_text" and self.browser:
+                return await self.browser.get_page_text(args[0] if args else None)
+            if cmd == "/screenshot" and args and self.vision:
+                return self.vision.take_screenshot(args[0])
+        except Exception as e:
+            logger.exception("Shortcut error: %s", command)
+            return f"Error: {e}"
+
+        return None
 
     async def handle_command(self, event_data: dict[str, Any]) -> None:
-        """Handle user command received from Telegram."""
+        """Main entry point for handling user commands."""
         raw_chat_id = event_data.get("chat_id")
         try:
             chat_id = int(raw_chat_id)
         except (TypeError, ValueError):
             logger.warning("Invalid chat_id in command event: %s", raw_chat_id)
             return
-
         command = str(event_data.get("command", "")).strip()
-        logger.info("Handling command for chat_id=%s: %s", chat_id, command)
-
         if not command:
             await self.event_bus.publish(
                 "telegram.send.reply",
-                {"chat_id": chat_id, "text": "Пустая команда. Отправьте текстовый запрос."},
+                {"chat_id": chat_id, "text": "Empty command. Send a text request."},
             )
             return
 
-        history = self.memory.get_history(chat_id)
-
-        try:
-            adapter_result = await self._try_adapter_shortcuts(command)
-            if adapter_result is not None:
-                reply_text = adapter_result
-            else:
-                reply_text = await self.llm_router.process_command(command=command, context=history)
-        except PermissionError as exc:
-            logger.warning("Permission denied for command chat_id=%s: %s", chat_id, exc)
-            reply_text = f"⛔ {exc}"
-        except Exception:  # noqa: BLE001
-            logger.exception("Command processing failed")
-            reply_text = "Не удалось обработать команду из-за внутренней ошибки."
-
         self.memory.add_message(chat_id, "user", command)
-        self.memory.add_message(chat_id, "assistant", reply_text)
+
+        # Try slash shortcuts first
+        shortcut = await self._try_shortcuts(command)
+        if shortcut is not None:
+            response_text = shortcut
+        else:
+            # Run the full agent loop
+            response_text = await self._agent_loop(command, chat_id)
+
+        self.memory.add_message(chat_id, "assistant", response_text)
         await self.event_bus.publish(
-            "telegram.send.reply",
-            {"chat_id": chat_id, "text": reply_text},
+            "telegram.send.reply", {"chat_id": chat_id, "text": response_text}
         )
-
-    async def _try_adapter_shortcuts(self, command: str) -> str | None:
-        """
-        Handle simple MVP adapter commands.
-
-        Supported:
-        - /system <cmd>
-        - /browser_open <url>
-        - /browser_text [url]
-        - /screenshot <filename>
-        """
-        if command.startswith("/system "):
-            system = self.adapters.get("system")
-            if system is None:
-                return "System adapter недоступен."
-            command_to_run = command.removeprefix("/system ").strip()
-            if not command_to_run:
-                return "Укажите команду: /system <команда>"
-            return await system.run_app(command_to_run)
-
-        if command.startswith("/browser_open "):
-            browser = self.adapters.get("browser")
-            if browser is None:
-                return "Browser adapter недоступен."
-            url = command.removeprefix("/browser_open ").strip()
-            if not url:
-                return "Укажите URL: /browser_open <url>"
-            await browser.open_url(url)
-            return f"Открыл страницу: {url}"
-
-        if command.startswith("/browser_text"):
-            browser = self.adapters.get("browser")
-            if browser is None:
-                return "Browser adapter недоступен."
-            url = command.removeprefix("/browser_text").strip() or None
-            return await browser.get_page_text(url)
-
-        if command.startswith("/screenshot "):
-            vision = self.adapters.get("vision")
-            if vision is None:
-                return "Vision adapter недоступен."
-            filename = command.removeprefix("/screenshot ").strip()
-            if not filename:
-                return "Укажите имя файла: /screenshot <filename.png>"
-            saved = vision.take_screenshot(filename)
-            return f"Скриншот сохранён: {saved}"
-
-        return None
-
