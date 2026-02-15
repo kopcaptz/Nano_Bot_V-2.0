@@ -87,6 +87,16 @@ cp .env.example .env
 python src/main.py
 ```
 
+## 7) Быстрая проверка регрессий
+
+```bash
+PYTHONPATH=src python3 -m unittest -v \
+  tests/test_command_handler_shortcuts.py \
+  tests/test_event_bus.py \
+  tests/test_system_adapter_security.py \
+  tests/test_llm_router_helpers.py
+```
+
 ---
 
 ## Быстрые команды в Telegram (MVP)
