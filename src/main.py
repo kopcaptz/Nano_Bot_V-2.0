@@ -103,7 +103,10 @@ async def main() -> None:
             logger.warning("Signal handlers are not supported on this platform.")
 
     logger.info("Nano Bot V-2.0 started.")
-    await shutdown_event.wait()
+    try:
+        await shutdown_event.wait()
+    except KeyboardInterrupt:
+        await request_shutdown("keyboard interrupt")
 
     logger.info("Stopping adapters...")
     await asyncio.gather(*(adapter.stop() for adapter in adapters.values()), return_exceptions=True)

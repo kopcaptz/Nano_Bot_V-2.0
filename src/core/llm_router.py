@@ -61,4 +61,7 @@ class LLMRouter:
         except openai.APIError:
             logger.exception("OpenRouter API error")
             return "Произошла ошибка API при обращении к LLM. Попробуйте снова."
+        except Exception:  # noqa: BLE001
+            logger.exception("Unexpected error while calling OpenRouter")
+            return "Неожиданная ошибка при обращении к LLM. Попробуйте позже."
 
