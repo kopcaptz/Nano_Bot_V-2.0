@@ -22,6 +22,9 @@ class EventBus:
 
     async def subscribe(self, event_type: str, callback: EventCallback) -> None:
         """Register callback for an event type."""
+        if not inspect.iscoroutinefunction(callback):
+            logger.error("Refusing non-async subscriber for event '%s': %s", event_type, callback)
+            return
         if callback in self._subscribers[event_type]:
             logger.debug("Subscriber already exists for event '%s'.", event_type)
             return

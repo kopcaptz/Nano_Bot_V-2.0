@@ -37,8 +37,6 @@ class TelegramAdapter(BaseAdapter):
         if not self.token:
             logger.warning("Telegram adapter skipped: TELEGRAM_BOT_TOKEN is empty.")
             return
-
-        self._running = True
         if not self._reply_subscribed:
             await self.event_bus.subscribe("telegram.send.reply", self.send_message)
             self._reply_subscribed = True
@@ -53,6 +51,7 @@ class TelegramAdapter(BaseAdapter):
         await self._app.initialize()
         await self._app.start()
         await self._app.updater.start_polling(drop_pending_updates=True)
+        self._running = True
         logger.info("Telegram adapter started.")
 
     async def stop(self) -> None:
