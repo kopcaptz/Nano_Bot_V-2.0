@@ -109,6 +109,23 @@ def init_db() -> None:
             "CREATE INDEX IF NOT EXISTS idx_token_usage_date ON token_usage(date)"
         )
 
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reflections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tool_name TEXT NOT NULL,
+                tool_args TEXT,
+                error_text TEXT NOT NULL,
+                insight TEXT NOT NULL,
+                session_key TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_reflections_tool ON reflections(tool_name)"
+        )
+
         conn.commit()
 
 
@@ -122,39 +139,49 @@ def _fact_vector_id(category: str, key: str) -> str:
     return f"fact::{category}::{key}"
 
 
-def add_fact(category: str, key: str, value: str) -> None:
-    """Добавляет факт или обновляет значение, если факт уже есть."""
+def add_fact(
+    category: str,
+    key: str,
+    value: str,
+    domain: str | None = None,
+    sub_category: str | None = None,
+) -> None:
+    """Добавляет факт или обновляет значение."""
     init_db()
     now = _now_iso()
     with _connect() as conn:
         conn.execute(
             """
-            INSERT INTO facts (category, key, value, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO facts (domain, category, sub_category, key, value, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(category, key)
             DO UPDATE SET
                 value = excluded.value,
+                domain = COALESCE(excluded.domain, domain),
+                sub_category = COALESCE(excluded.sub_category, sub_category),
                 updated_at = excluded.updated_at
             """,
-            (category, key, value, now, now),
+            (domain, category, sub_category, key, value, now, now),
         )
         conn.commit()
 
-    # Синхронизируем факт в ChromaDB для семантического поиска.
     try:
+        vid = _fact_vector_id(category, key)
+        text = f"Domain: {domain or 'general'}\nCategory: {category}\nKey: {key}\nValue: {value}"
         add_vector_memory(
-            memory_id=_fact_vector_id(category, key),
-            text=f"Категория: {category}\nКлюч: {key}\nЗначение: {value}",
+            memory_id=vid,
+            text=text,
             metadata={
                 "type": "fact",
+                "domain": domain or "general",
                 "category": category,
+                "sub_category": sub_category or "",
                 "key": key,
                 "value": value,
                 "updated_at": now,
             },
         )
     except Exception as exc:
-        # Векторный индекс не должен ломать SQLite-операции.
         logger.debug("Failed to sync fact into vector DB: %s", exc)
 
 
@@ -164,7 +191,7 @@ def get_fact(category: str, key: str) -> dict[str, Any] | None:
     with _connect() as conn:
         row = conn.execute(
             """
-            SELECT id, category, key, value, created_at, updated_at
+            SELECT id, domain, category, sub_category, key, value, created_at, updated_at
             FROM facts
             WHERE category = ? AND key = ?
             LIMIT 1
@@ -208,6 +235,41 @@ def get_facts_by_category(category: str) -> list[dict[str, Any]]:
             ORDER BY key ASC
             """,
             (category,),
+        ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def get_facts_by_domain(domain: str) -> list[dict[str, Any]]:
+    """Возвращает все факты указанного домена."""
+    init_db()
+    with _connect() as conn:
+        rows = conn.execute(
+            "SELECT * FROM facts WHERE domain = ? ORDER BY category, key",
+            (domain,),
+        ).fetchall()
+    return [_row_to_dict(row) for row in rows]
+
+
+def get_facts_filtered(
+    domain: str | None = None,
+    category: str | None = None,
+) -> list[dict[str, Any]]:
+    """Возвращает факты с фильтрацией по domain и/или category."""
+    init_db()
+    conditions = []
+    params: list[str] = []
+    if domain:
+        conditions.append("domain = ?")
+        params.append(domain)
+    if category:
+        conditions.append("category = ?")
+        params.append(category)
+
+    where = " AND ".join(conditions) if conditions else "1=1"
+    with _connect() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM facts WHERE {where} ORDER BY domain, category, key",
+            params,
         ).fetchall()
     return [_row_to_dict(row) for row in rows]
 
@@ -356,6 +418,45 @@ def get_recent_conversations(limit: int = 100) -> list[dict[str, Any]]:
         ).fetchall()
 
     return [_row_to_dict(row) for row in reversed(rows)]
+
+
+# ============== REFLECTIONS ==============
+
+
+def add_reflection(
+    tool_name: str,
+    tool_args: str,
+    error_text: str,
+    insight: str,
+    session_key: str | None = None,
+) -> None:
+    """Сохраняет рефлексию об ошибке инструмента."""
+    init_db()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO reflections (tool_name, tool_args, error_text, insight, session_key, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (tool_name, tool_args, error_text, insight, session_key, _now_iso()),
+        )
+        conn.commit()
+
+
+def get_recent_reflections(
+    tool_name: str | None = None, limit: int = 10
+) -> list[dict[str, Any]]:
+    """Возвращает последние рефлексии, опционально фильтруя по инструменту."""
+    init_db()
+    if tool_name:
+        query = "SELECT * FROM reflections WHERE tool_name = ? ORDER BY id DESC LIMIT ?"
+        params = (tool_name, limit)
+    else:
+        query = "SELECT * FROM reflections ORDER BY id DESC LIMIT ?"
+        params = (limit,)
+    with _connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [_row_to_dict(row) for row in rows]
 
 
 # ============== TOKEN USAGE ==============
