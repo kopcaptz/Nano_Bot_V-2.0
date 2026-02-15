@@ -29,9 +29,11 @@ class SystemAdapter(BaseAdapter):
         "tasklist": ["ps", "-e"],
     }
 
+    MAX_OUTPUT_CHARS = 12000
+
     def __init__(self, workspace: Path, command_timeout: float = 20.0) -> None:
         self.workspace = workspace
-        self.command_timeout = command_timeout
+        self.command_timeout = command_timeout if command_timeout > 0 else 20.0
         self._running = False
 
     async def start(self) -> None:
@@ -95,7 +97,7 @@ class SystemAdapter(BaseAdapter):
             alias = self.POSIX_ALIASES[executable]
             exec_parts = [*alias, *parts[1:]]
         if os.name != "nt" and executable == "ping":
-            has_count = any(arg in {"-c", "-n"} for arg in exec_parts[1:])
+            has_count = any(arg == "-c" or arg.startswith("-c") for arg in exec_parts[1:])
             if not has_count:
                 exec_parts = [*exec_parts, "-c", "4"]
 
@@ -134,8 +136,16 @@ class SystemAdapter(BaseAdapter):
         if process.returncode != 0 and err:
             return f"Command failed ({process.returncode}): {err}"
         if err:
-            return f"{output}\n{err}".strip()
-        return output or "(no output)"
+            merged = f"{output}\n{err}".strip()
+        else:
+            merged = output or "(no output)"
+
+        if len(merged) > self.MAX_OUTPUT_CHARS:
+            return (
+                f"{merged[:self.MAX_OUTPUT_CHARS]}\n"
+                f"... (truncated {len(merged) - self.MAX_OUTPUT_CHARS} chars)"
+            )
+        return merged
 
     def read_file(self, path: str) -> str:
         self._ensure_running()
