@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from urllib.parse import urlparse
 
 try:  # script mode: python src/main.py
     from core.event_bus import EventBus
@@ -173,15 +174,17 @@ class CommandHandler:
             url = command.removeprefix("/browser_open ").strip()
             if not url:
                 return "Укажите URL: /browser_open <url>"
-            await browser.open_url(url)
-            return f"Открыл страницу: {url}"
+            normalized_url = self._normalize_url(url)
+            await browser.open_url(normalized_url)
+            return f"Открыл страницу: {normalized_url}"
 
         if command.startswith("/browser_text"):
             browser = self.adapters.get("browser")
             if browser is None:
                 return "Browser adapter недоступен."
-            url = command.removeprefix("/browser_text").strip() or None
-            return await browser.get_page_text(url)
+            raw_url = command.removeprefix("/browser_text").strip() or None
+            normalized_url = self._normalize_url(raw_url) if raw_url else None
+            return await browser.get_page_text(normalized_url)
 
         if command == "/screenshot":
             return "Укажите имя файла: /screenshot <filename.png>"
@@ -235,6 +238,14 @@ class CommandHandler:
             + (", ".join(event_types) if event_types else "(none)")
         )
         return "\n".join(lines)
+
+    @staticmethod
+    def _normalize_url(url: str) -> str:
+        """Normalize URL and add https:// when scheme is omitted."""
+        parsed = urlparse(url)
+        if parsed.scheme:
+            return url
+        return f"https://{url}"
 
     @staticmethod
     def _normalize_command(command: str) -> str:
