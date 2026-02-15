@@ -6,9 +6,14 @@ import asyncio
 import logging
 from typing import Any
 
-from core.event_bus import EventBus
-from core.llm_router import LLMRouter
-from core.memory import CrystalMemory
+try:  # script mode: python src/main.py
+    from core.event_bus import EventBus
+    from core.llm_router import LLMRouter
+    from core.memory import CrystalMemory
+except ModuleNotFoundError:  # package mode: import src.main
+    from src.core.event_bus import EventBus
+    from src.core.llm_router import LLMRouter
+    from src.core.memory import CrystalMemory
 
 logger = logging.getLogger(__name__)
 

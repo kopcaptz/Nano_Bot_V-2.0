@@ -9,7 +9,10 @@ from pathlib import Path
 
 import pyperclip
 
-from adapters.base_adapter import BaseAdapter
+try:  # script mode
+    from adapters.base_adapter import BaseAdapter
+except ModuleNotFoundError:  # package mode
+    from src.adapters.base_adapter import BaseAdapter
 
 logger = logging.getLogger(__name__)
 

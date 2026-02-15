@@ -9,8 +9,12 @@ from typing import Any
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 
-from adapters.base_adapter import BaseAdapter
-from core.event_bus import EventBus
+try:  # script mode
+    from adapters.base_adapter import BaseAdapter
+    from core.event_bus import EventBus
+except ModuleNotFoundError:  # package mode
+    from src.adapters.base_adapter import BaseAdapter
+    from src.core.event_bus import EventBus
 
 logger = logging.getLogger(__name__)
 

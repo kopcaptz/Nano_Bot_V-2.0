@@ -6,15 +6,26 @@ import asyncio
 import logging
 import signal
 
-from adapters.browser_adapter import BrowserAdapter
-from adapters.system_adapter import SystemAdapter
-from adapters.telegram_adapter import TelegramAdapter
-from adapters.vision_adapter import VisionAdapter
-from config import load_config
-from core.event_bus import EventBus
-from core.handler import CommandHandler
-from core.llm_router import LLMRouter
-from core.memory import CrystalMemory
+try:  # script mode: python src/main.py
+    from adapters.browser_adapter import BrowserAdapter
+    from adapters.system_adapter import SystemAdapter
+    from adapters.telegram_adapter import TelegramAdapter
+    from adapters.vision_adapter import VisionAdapter
+    from config import load_config
+    from core.event_bus import EventBus
+    from core.handler import CommandHandler
+    from core.llm_router import LLMRouter
+    from core.memory import CrystalMemory
+except ModuleNotFoundError:  # package mode: import src.main
+    from src.adapters.browser_adapter import BrowserAdapter
+    from src.adapters.system_adapter import SystemAdapter
+    from src.adapters.telegram_adapter import TelegramAdapter
+    from src.adapters.vision_adapter import VisionAdapter
+    from src.config import load_config
+    from src.core.event_bus import EventBus
+    from src.core.handler import CommandHandler
+    from src.core.llm_router import LLMRouter
+    from src.core.memory import CrystalMemory
 
 logger = logging.getLogger(__name__)
 
