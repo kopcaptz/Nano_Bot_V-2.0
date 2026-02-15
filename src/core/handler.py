@@ -55,14 +55,13 @@ class CommandHandler:
             )
             return
 
-        self.memory.add_message(chat_id, "user", command)
+        history = self.memory.get_history(chat_id)
 
         try:
             adapter_result = await self._try_adapter_shortcuts(command)
             if adapter_result is not None:
                 reply_text = adapter_result
             else:
-                history = self.memory.get_history(chat_id)
                 reply_text = await self.llm_router.process_command(command=command, context=history)
         except PermissionError as exc:
             logger.warning("Permission denied for command chat_id=%s: %s", chat_id, exc)
@@ -71,6 +70,7 @@ class CommandHandler:
             logger.exception("Command processing failed")
             reply_text = "Не удалось обработать команду из-за внутренней ошибки."
 
+        self.memory.add_message(chat_id, "user", command)
         self.memory.add_message(chat_id, "assistant", reply_text)
         await self.event_bus.publish(
             "telegram.send.reply",
