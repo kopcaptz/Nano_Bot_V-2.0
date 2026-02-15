@@ -60,6 +60,18 @@ cp .env.example .env
 - `AGENT_WORKSPACE`
 - `LOG_LEVEL`
 
+### Рекомендуемая рабочая директория (песочница)
+
+Создайте директорию заранее:
+
+- Windows:
+  - `C:\Users\kopca\Nano_Bot_V2\workspace\`
+- Linux/macOS (пример):
+  - `/workspace/workspace`
+
+> Если на Linux/macOS в `AGENT_WORKSPACE` оставить Windows-путь (`C:\...`),
+> приложение автоматически переключится на локальный fallback-путь `<repo>/workspace`.
+
 ## 6) Запуск
 
 ```bash
