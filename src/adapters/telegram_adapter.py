@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 class TelegramAdapter(BaseAdapter):
     """Telegram channel adapter."""
+    MAX_MESSAGE_LENGTH = 4000
 
     def __init__(self, event_bus: EventBus, token: str) -> None:
         self.event_bus = event_bus
@@ -111,7 +112,35 @@ class TelegramAdapter(BaseAdapter):
             return
 
         try:
-            await self._app.bot.send_message(chat_id=chat_id, text=text)
+            chunks = self._split_text(text)
+            for idx, chunk in enumerate(chunks):
+                await self._app.bot.send_message(chat_id=chat_id, text=chunk)
+                if idx < len(chunks) - 1:
+                    logger.debug("Sent telegram chunk %d/%d", idx + 1, len(chunks))
         except Exception:  # noqa: BLE001
             logger.exception("Failed to send telegram message to chat_id=%s", chat_id)
+
+    def _split_text(self, text: str) -> list[str]:
+        """Split outgoing message into Telegram-safe chunks."""
+        if len(text) <= self.MAX_MESSAGE_LENGTH:
+            return [text]
+
+        chunks: list[str] = []
+        remaining = text
+        while remaining:
+            if len(remaining) <= self.MAX_MESSAGE_LENGTH:
+                chunks.append(remaining)
+                break
+
+            window = remaining[: self.MAX_MESSAGE_LENGTH]
+            split_at = window.rfind("\n")
+            if split_at <= 0:
+                split_at = window.rfind(" ")
+            if split_at <= 0:
+                split_at = self.MAX_MESSAGE_LENGTH
+
+            chunks.append(remaining[:split_at].strip())
+            remaining = remaining[split_at:].lstrip()
+
+        return chunks
 
