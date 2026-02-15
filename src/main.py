@@ -103,6 +103,10 @@ async def main() -> None:
             return False
         except Exception:  # noqa: BLE001
             logger.exception("Adapter '%s' failed to start.", name)
+            try:
+                await asyncio.wait_for(adapter.stop(), timeout=config.adapter_stop_timeout_seconds)
+            except Exception:  # noqa: BLE001
+                logger.exception("Adapter '%s' cleanup after start failure failed.", name)
             return False
 
     async def stop_adapter(name: str, adapter: object) -> None:
