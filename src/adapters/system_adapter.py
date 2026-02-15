@@ -73,7 +73,12 @@ class SystemAdapter(BaseAdapter):
         if self.SHELL_META_PATTERN.search(command):
             raise PermissionError("Command contains forbidden shell operators.")
 
-        parts = shlex.split(command, posix=(os.name != "nt"))
+        try:
+            parts = shlex.split(command, posix=(os.name != "nt"))
+        except ValueError as exc:
+            raise PermissionError(f"Invalid command syntax: {exc}") from exc
+        if not parts:
+            raise PermissionError("Empty command is not allowed.")
         executable = parts[0].lower() if parts else ""
         if executable not in self.SAFE_COMMANDS:
             raise PermissionError(
