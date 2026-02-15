@@ -138,36 +138,86 @@ def _fact_vector_id(category: str, key: str) -> str:
     return f"fact::{category}::{key}"
 
 
-def add_fact(category: str, key: str, value: str) -> None:
+def add_fact(
+    category: str,
+    key: str,
+    value: str,
+    domain: str | None = None,
+    sub_category: str | None = None,
+) -> None:
     """Добавляет факт или обновляет значение, если факт уже есть."""
     init_db()
     now = _now_iso()
+    domain_val = domain if domain and domain.strip() else None
+    sub_val = sub_category if sub_category and str(sub_category).strip() else None
+
+    # Ensure facts table has domain/sub_category columns (migration on first use)
     with _connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO facts (category, key, value, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?)
-            ON CONFLICT(category, key)
-            DO UPDATE SET
-                value = excluded.value,
-                updated_at = excluded.updated_at
-            """,
-            (category, key, value, now, now),
-        )
+        try:
+            conn.execute("SELECT domain FROM facts LIMIT 1")
+        except sqlite3.OperationalError:
+            try:
+                conn.execute("ALTER TABLE facts ADD COLUMN domain TEXT DEFAULT NULL")
+            except sqlite3.OperationalError as e:
+                if "duplicate column" not in str(e).lower():
+                    raise
+            try:
+                conn.execute("ALTER TABLE facts ADD COLUMN sub_category TEXT DEFAULT NULL")
+            except sqlite3.OperationalError as e:
+                if "duplicate column" not in str(e).lower():
+                    raise
+            conn.commit()
+
+    with _connect() as conn:
+        cursor = conn.execute("PRAGMA table_info(facts)")
+        columns = [row[1] for row in cursor.fetchall()]
+
+        if "domain" in columns and "sub_category" in columns:
+            conn.execute(
+                """
+                INSERT INTO facts (category, key, value, domain, sub_category, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(category, key)
+                DO UPDATE SET
+                    value = excluded.value,
+                    domain = COALESCE(excluded.domain, domain),
+                    sub_category = COALESCE(excluded.sub_category, sub_category),
+                    updated_at = excluded.updated_at
+                """,
+                (category, key, value, domain_val, sub_val, now, now),
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO facts (category, key, value, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(category, key)
+                DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = excluded.updated_at
+                """,
+                (category, key, value, now, now),
+            )
         conn.commit()
 
     # Синхронизируем факт в ChromaDB для семантического поиска.
     try:
+        text = f"Domain: {domain_val or 'general'}\nКатегория: {category}\nКлюч: {key}\nЗначение: {value}"
+        metadata: dict[str, Any] = {
+            "type": "fact",
+            "category": category,
+            "key": key,
+            "value": value,
+            "updated_at": now,
+        }
+        if domain_val:
+            metadata["domain"] = domain_val
+        if sub_val:
+            metadata["sub_category"] = sub_val
         add_vector_memory(
             memory_id=_fact_vector_id(category, key),
-            text=f"Категория: {category}\nКлюч: {key}\nЗначение: {value}",
-            metadata={
-                "type": "fact",
-                "category": category,
-                "key": key,
-                "value": value,
-                "updated_at": now,
-            },
+            text=text,
+            metadata=metadata,
         )
     except Exception as exc:
         # Векторный индекс не должен ломать SQLite-операции.

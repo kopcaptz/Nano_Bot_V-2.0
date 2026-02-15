@@ -11,19 +11,30 @@ from nanobot.memory.db import add_fact, get_recent_conversations
 from nanobot.providers.base import LLMProvider
 
 
-CRYSTALLIZE_PROMPT = """Проанализируй эти диалоги. Найди:
-- Предпочтения пользователя
-- Повторяющиеся темы
-- Важные факты
-Верни список фактов в формате JSON:
-[{"category": "...", "key": "...", "value": "..."}]
+CRYSTALLIZE_PROMPT = """Analyze the following dialogues. Extract key facts and user preferences, structuring them hierarchically.
 
-Требования:
-- Верни только JSON-массив (без markdown и без пояснений).
-- category/key/value должны быть короткими и конкретными.
-- Не добавляй дубликаты.
-- Если фактов нет, верни [].
-"""
+Return a JSON array with this structure:
+[{"domain": "...", "category": "...", "sub_category": "...", "key": "...", "value": "..."}]
+
+**Hierarchy Guidelines:**
+- domain: Broad area or project (e.g., "User Preferences", "Project: Nano Bot", "Technology: Python", "Work", "Personal").
+- category: Specific topic within the domain (e.g., "Architecture", "Hobbies", "Libraries", "Communication").
+- sub_category: Optional further detail (e.g., "Database", "Music Genres"). Set to null if not applicable.
+- key: The specific attribute name.
+- value: The attribute value.
+
+**Requirements:**
+- Return ONLY the JSON array (no markdown, no explanations).
+- Be specific and concise in key/value pairs.
+- Avoid duplicates.
+- If no facts found, return [].
+
+**Example:**
+[
+  {"domain": "User Preferences", "category": "Communication", "sub_category": null, "key": "Preferred Language", "value": "Russian"},
+  {"domain": "Project: Nano Bot", "category": "Architecture", "sub_category": "Memory", "key": "Vector DB Engine", "value": "ChromaDB"},
+  {"domain": "Personal", "category": "Schedule", "sub_category": null, "key": "Work Hours", "value": "9:00-18:00"}
+]"""
 
 
 def _build_dialogue_payload(rows: list[dict[str, Any]]) -> str:
@@ -84,30 +95,29 @@ def _extract_json_array(raw: str) -> list[dict[str, Any]]:
     return []
 
 
-def _normalize_facts(raw_facts: list[dict[str, Any]]) -> list[dict[str, str]]:
+def _normalize_facts(raw_facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Нормализует и дедуплицирует факты перед сохранением."""
-    normalized: list[dict[str, str]] = []
+    normalized: list[dict[str, Any]] = []
     seen: set[tuple[str, str, str]] = set()
 
     for item in raw_facts:
+        domain = str(item.get("domain", "")).strip() or "general"
         category = str(item.get("category", "")).strip()
+        sub_category = str(item.get("sub_category") or "").strip() or None
         key = str(item.get("key", "")).strip()
         value = str(item.get("value", "")).strip()
         if not category or not key or not value:
             continue
 
-        identity = (category.lower(), key.lower(), value.lower())
+        identity = (domain.lower(), category.lower(), key.lower())
         if identity in seen:
             continue
         seen.add(identity)
 
-        normalized.append(
-            {
-                "category": category,
-                "key": key,
-                "value": value,
-            }
-        )
+        fact: dict[str, Any] = {"domain": domain, "category": category, "key": key, "value": value}
+        if sub_category:
+            fact["sub_category"] = sub_category
+        normalized.append(fact)
 
     return normalized
 
@@ -163,7 +173,13 @@ async def crystallize_memories(
     saved = 0
     for fact in facts:
         try:
-            add_fact(fact["category"], fact["key"], fact["value"])
+            add_fact(
+                category=fact["category"],
+                key=fact["key"],
+                value=fact["value"],
+                domain=fact.get("domain"),
+                sub_category=fact.get("sub_category"),
+            )
             saved += 1
         except Exception as exc:
             logger.warning(f"Crystallize: failed to save fact {fact}: {exc}")
