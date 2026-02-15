@@ -89,6 +89,17 @@ async def main() -> None:
             return False
 
     loop = asyncio.get_running_loop()
+
+    def _signal_fallback_handler(sig_num: int, _frame: object) -> None:
+        """Fallback signal handler when loop.add_signal_handler is unsupported."""
+        try:
+            sig_name = signal.Signals(sig_num).name
+        except Exception:  # noqa: BLE001
+            sig_name = str(sig_num)
+        loop.call_soon_threadsafe(
+            lambda: asyncio.create_task(request_shutdown(f"signal {sig_name} (fallback)"))
+        )
+
     for sig in (signal.SIGINT, signal.SIGTERM):
         try:
             loop.add_signal_handler(
@@ -96,7 +107,13 @@ async def main() -> None:
                 lambda s=sig: asyncio.create_task(request_shutdown(f"signal {s.name}")),
             )
         except NotImplementedError:
-            logger.warning("Signal handlers are not supported on this platform.")
+            try:
+                signal.signal(sig, _signal_fallback_handler)
+                logger.warning(
+                    "loop.add_signal_handler unsupported; installed fallback for %s", sig.name
+                )
+            except Exception:  # noqa: BLE001
+                logger.warning("Signal handlers are not supported on this platform.")
 
     try:
         # Per specification: start all adapters concurrently via asyncio.gather
