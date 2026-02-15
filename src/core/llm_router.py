@@ -81,6 +81,11 @@ class LLMRouter:
                     maybe_text = item.get("text")
                     if isinstance(maybe_text, str):
                         text_chunks.append(maybe_text)
+                    continue
+
+                maybe_text_attr = getattr(item, "text", None)
+                if isinstance(maybe_text_attr, str):
+                    text_chunks.append(maybe_text_attr)
             return "\n".join(chunk.strip() for chunk in text_chunks if chunk.strip())
 
         return ""
