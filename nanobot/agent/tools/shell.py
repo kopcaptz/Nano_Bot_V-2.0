@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.policy import ToolPolicy
 
 
 class ExecTool(Tool):
@@ -107,6 +108,11 @@ class ExecTool(Tool):
             
         except Exception as e:
             return f"Error executing command: {str(e)}"
+
+    @property
+    def policy(self) -> ToolPolicy:
+        """ExecTool requires user confirmation for security."""
+        return ToolPolicy.REQUIRE_CONFIRMATION
 
     def _guard_command(self, command: str, cwd: str) -> str | None:
         """Best-effort safety guard for potentially destructive commands."""

@@ -3,6 +3,8 @@
 from abc import ABC, abstractmethod
 from typing import Any
 
+from nanobot.agent.tools.policy import ToolPolicy
+
 
 class Tool(ABC):
     """
@@ -51,6 +53,11 @@ class Tool(ABC):
             String result of the tool execution.
         """
         pass
+
+    @property
+    def policy(self) -> ToolPolicy:
+        """Returns the execution policy for this tool. Override in subclasses if needed."""
+        return ToolPolicy.ALLOW
 
     def validate_params(self, params: dict[str, Any]) -> list[str]:
         """Validate tool parameters against JSON schema. Returns error list (empty if valid)."""

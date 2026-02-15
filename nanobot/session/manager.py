@@ -24,6 +24,7 @@ class Session:
     created_at: datetime = field(default_factory=datetime.now)
     updated_at: datetime = field(default_factory=datetime.now)
     metadata: dict[str, Any] = field(default_factory=dict)
+    pending_confirmation: dict[str, Any] | None = None
     
     def add_message(self, role: str, content: str, **kwargs: Any) -> None:
         """Add a message to the session."""
@@ -108,7 +109,8 @@ class SessionManager:
             messages = []
             metadata = {}
             created_at = None
-            
+            pending_confirmation = None
+
             with open(path) as f:
                 for line in f:
                     line = line.strip()
@@ -120,6 +122,7 @@ class SessionManager:
                     if data.get("_type") == "metadata":
                         metadata = data.get("metadata", {})
                         created_at = datetime.fromisoformat(data["created_at"]) if data.get("created_at") else None
+                        pending_confirmation = data.get("pending_confirmation")
                     else:
                         messages.append(data)
             
@@ -127,7 +130,8 @@ class SessionManager:
                 key=key,
                 messages=messages,
                 created_at=created_at or datetime.now(),
-                metadata=metadata
+                metadata=metadata,
+                pending_confirmation=pending_confirmation,
             )
         except Exception as e:
             logger.warning(f"Failed to load session {key}: {e}")
@@ -143,7 +147,8 @@ class SessionManager:
                 "_type": "metadata",
                 "created_at": session.created_at.isoformat(),
                 "updated_at": session.updated_at.isoformat(),
-                "metadata": session.metadata
+                "metadata": session.metadata,
+                "pending_confirmation": session.pending_confirmation,
             }
             f.write(json.dumps(metadata_line) + "\n")
             

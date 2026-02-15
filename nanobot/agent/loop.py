@@ -1,6 +1,7 @@
 """Agent loop: the core processing engine."""
 
 import asyncio
+import copy
 import json
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,7 @@ from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
 from nanobot.agent.context import ContextBuilder
+from nanobot.agent.tools.policy import ToolPolicy
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
 from nanobot.agent.tools.shell import ExecTool
@@ -19,7 +21,7 @@ from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.subagent import SubagentManager
-from nanobot.session.manager import SessionManager
+from nanobot.session.manager import Session, SessionManager
 
 
 class AgentLoop:
@@ -161,7 +163,11 @@ class AgentLoop:
         
         # Get or create session
         session = self.sessions.get_or_create(msg.session_key)
-        
+
+        # Check if we're waiting for confirmation
+        if session.pending_confirmation:
+            return await self._handle_confirmation(session, msg)
+
         # Update tool contexts
         message_tool = self.tools.get("message")
         if isinstance(message_tool, MessageTool):
@@ -217,13 +223,49 @@ class AgentLoop:
                     reasoning_content=response.reasoning_content,
                 )
                 
-                # Execute tools
+                # Execute tools (with policy check)
                 for tool_call in response.tool_calls:
-                    args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
-                    logger.info(f"Tool call: {tool_call.name}({args_str[:200]})")
-                    result = await self.tools.execute(tool_call.name, tool_call.arguments)
+                    tool_name = tool_call.name
+                    tool_args = tool_call.arguments
+                    args_str = json.dumps(tool_args, ensure_ascii=False)
+                    logger.info(f"Tool call: {tool_name}({args_str[:200]})")
+
+                    # Check tool policy
+                    policy = self.tools.get_policy(tool_name)
+
+                    if policy == ToolPolicy.DENY:
+                        result = f"Error: Tool '{tool_name}' is not allowed to execute."
+                        messages = self.context.add_tool_result(
+                            messages, tool_call.id, tool_name, result
+                        )
+                        continue
+
+                    if policy == ToolPolicy.REQUIRE_CONFIRMATION:
+                        # Ask user for confirmation
+                        session.pending_confirmation = {
+                            "tool_name": tool_name,
+                            "tool_args": tool_args,
+                            "tool_call_id": tool_call.id,
+                            "description": f"Execute {tool_name} with args: {tool_args}",
+                            "messages": copy.deepcopy(messages),
+                            "assistant_content": response.content,
+                            "reasoning_content": response.reasoning_content,
+                            "original_user_message": msg.content,
+                        }
+                        self.sessions.save(session)
+
+                        await self.bus.publish_outbound(OutboundMessage(
+                            channel=msg.channel,
+                            chat_id=msg.chat_id,
+                            content=f"⚠️ Confirmation required:\n\nTool: `{tool_name}`\nArguments: `{args_str[:500]}`\n\nProceed? (yes/no)",
+                            metadata=msg.metadata or {},
+                        ))
+                        return None
+
+                    # policy == ToolPolicy.ALLOW - execute normally
+                    result = await self.tools.execute(tool_name, tool_args)
                     messages = self.context.add_tool_result(
-                        messages, tool_call.id, tool_call.name, result
+                        messages, tool_call.id, tool_name, result
                     )
             else:
                 # No tool calls, we're done
@@ -248,7 +290,157 @@ class AgentLoop:
             content=final_content,
             metadata=msg.metadata or {},  # Pass through for channel-specific needs (e.g. Slack thread_ts)
         )
-    
+
+    async def _handle_confirmation(self, session: Session, msg: InboundMessage) -> OutboundMessage | None:
+        """Handle user confirmation for pending tool execution."""
+        user_response = msg.content.strip().lower()
+        pending = session.pending_confirmation
+
+        if user_response in ["yes", "y", "да", "д"]:
+            # User confirmed - execute the tool
+            tool_name = pending["tool_name"]
+            tool_args = pending["tool_args"]
+
+            result = await self.tools.execute(tool_name, tool_args)
+            messages = self.context.add_tool_result(
+                pending["messages"],
+                pending["tool_call_id"],
+                tool_name,
+                result,
+            )
+
+            # Clear pending confirmation and get original user message before clearing
+            original_user_message = pending.get("original_user_message", msg.content)
+            session.pending_confirmation = None
+            self.sessions.save(session)
+
+            # Continue processing
+            return await self._continue_after_tool(
+                session, msg, messages, original_user_message
+            )
+
+        elif user_response in ["no", "n", "нет", "н"]:
+            # User declined
+            session.add_message(
+                "user",
+                pending.get("original_user_message", "User declined"),
+            )
+            session.add_message("assistant", "Tool execution cancelled by user.")
+            session.pending_confirmation = None
+            self.sessions.save(session)
+
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="Understood. I won't execute that command. How can I help you?",
+                metadata=msg.metadata or {},
+            ))
+            return None
+        else:
+            # Invalid response - ask again
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content=f"Please respond with 'yes' or 'no' to confirm: {pending['description']}",
+                metadata=msg.metadata or {},
+            ))
+            return None
+
+    async def _continue_after_tool(
+        self,
+        session: Session,
+        msg: InboundMessage,
+        messages: list[dict[str, Any]],
+        original_user_message: str,
+    ) -> OutboundMessage | None:
+        """Continue agent loop after tool execution (post-confirmation)."""
+        iteration = 0
+        final_content = None
+
+        while iteration < self.max_iterations:
+            iteration += 1
+
+            response = await self.provider.chat(
+                messages=messages,
+                tools=self.tools.get_definitions(),
+                model=self.model,
+            )
+
+            if response.has_tool_calls:
+                tool_call_dicts = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.name,
+                            "arguments": json.dumps(tc.arguments),
+                        },
+                    }
+                    for tc in response.tool_calls
+                ]
+                messages = self.context.add_assistant_message(
+                    messages, response.content, tool_call_dicts,
+                    reasoning_content=response.reasoning_content,
+                )
+
+                for tool_call in response.tool_calls:
+                    tool_name = tool_call.name
+                    tool_args = tool_call.arguments
+                    args_str = json.dumps(tool_args, ensure_ascii=False)
+                    logger.info(f"Tool call: {tool_name}({args_str[:200]})")
+
+                    policy = self.tools.get_policy(tool_name)
+
+                    if policy == ToolPolicy.DENY:
+                        result = f"Error: Tool '{tool_name}' is not allowed to execute."
+                        messages = self.context.add_tool_result(
+                            messages, tool_call.id, tool_name, result
+                        )
+                        continue
+
+                    if policy == ToolPolicy.REQUIRE_CONFIRMATION:
+                        session.pending_confirmation = {
+                            "tool_name": tool_name,
+                            "tool_args": tool_args,
+                            "tool_call_id": tool_call.id,
+                            "description": f"Execute {tool_name} with args: {tool_args}",
+                            "messages": copy.deepcopy(messages),
+                            "assistant_content": response.content,
+                            "reasoning_content": response.reasoning_content,
+                            "original_user_message": original_user_message,
+                        }
+                        self.sessions.save(session)
+
+                        await self.bus.publish_outbound(OutboundMessage(
+                            channel=msg.channel,
+                            chat_id=msg.chat_id,
+                            content=f"⚠️ Confirmation required:\n\nTool: `{tool_name}`\nArguments: `{args_str[:500]}`\n\nProceed? (yes/no)",
+                            metadata=msg.metadata or {},
+                        ))
+                        return None
+
+                    result = await self.tools.execute(tool_name, tool_args)
+                    messages = self.context.add_tool_result(
+                        messages, tool_call.id, tool_name, result
+                    )
+            else:
+                final_content = response.content
+                break
+
+        if final_content is None:
+            final_content = "I've completed processing but have no response to give."
+
+        session.add_message("user", original_user_message)
+        session.add_message("assistant", final_content)
+        self.sessions.save(session)
+
+        return OutboundMessage(
+            channel=msg.channel,
+            chat_id=msg.chat_id,
+            content=final_content,
+            metadata=msg.metadata or {},
+        )
+
     async def _process_system_message(self, msg: InboundMessage) -> OutboundMessage | None:
         """
         Process a system message (e.g., subagent announce).
