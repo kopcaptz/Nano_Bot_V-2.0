@@ -29,6 +29,7 @@ class SystemAdapter(BaseAdapter):
         "tasklist": ["ps", "-e"],
     }
 
+    MAX_COMMAND_LENGTH = 512
     MAX_OUTPUT_CHARS = 12000
 
     def __init__(self, workspace: Path, command_timeout: float = 20.0) -> None:
@@ -76,6 +77,11 @@ class SystemAdapter(BaseAdapter):
         command = command.strip()
         if not command:
             raise PermissionError("Empty command is not allowed.")
+        if len(command) > self.MAX_COMMAND_LENGTH:
+            raise PermissionError(
+                f"Command is too long ({len(command)} chars). "
+                f"Max length: {self.MAX_COMMAND_LENGTH}."
+            )
 
         if self.SHELL_META_PATTERN.search(command):
             raise PermissionError("Command contains forbidden shell operators.")
