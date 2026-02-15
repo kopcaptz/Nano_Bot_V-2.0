@@ -213,6 +213,9 @@ class CommandHandler:
             result = vision.ocr_image(image_path)
             return f"OCR: {result}"
 
+        if command.startswith("/"):
+            return "Неизвестная команда. Используйте /help."
+
         return None
 
     def _build_status_text(self, chat_id: int) -> str:
