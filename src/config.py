@@ -66,13 +66,19 @@ def load_config() -> Config:
     if not telegram_token:
         logging.warning("TELEGRAM_BOT_TOKEN is empty. Telegram adapter will not start.")
 
-    if not os.getenv("OPENROUTER_API_KEY", "").strip():
+    openrouter_api_key = os.getenv("OPENROUTER_API_KEY", "").strip()
+    if not openrouter_api_key:
         logging.warning("OPENROUTER_API_KEY is empty. LLM requests will fail.")
+
+    openrouter_model = os.getenv("OPENROUTER_MODEL", "kimi/kimi-k2.5").strip()
+    if not openrouter_model:
+        openrouter_model = "kimi/kimi-k2.5"
+        logging.warning("OPENROUTER_MODEL is empty. Falling back to kimi/kimi-k2.5.")
 
     return Config(
         telegram_bot_token=telegram_token,
-        openrouter_api_key=os.getenv("OPENROUTER_API_KEY", "").strip(),
-        openrouter_model=os.getenv("OPENROUTER_MODEL", "kimi/kimi-k2.5").strip(),
+        openrouter_api_key=openrouter_api_key,
+        openrouter_model=openrouter_model,
         agent_workspace=workspace_path,
         log_level=log_level,
     )
