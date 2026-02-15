@@ -139,9 +139,12 @@ class SystemAdapter(BaseAdapter):
 
         output = stdout.decode("utf-8", errors="replace").strip()
         err = stderr.decode("utf-8", errors="replace").strip()
-        if process.returncode != 0 and err:
-            return f"Command failed ({process.returncode}): {err}"
-        if err:
+        if process.returncode != 0:
+            details = "\n".join(part for part in (output, err) if part).strip()
+            if not details:
+                details = "(no output)"
+            merged = f"Command failed ({process.returncode}): {details}"
+        elif err:
             merged = f"{output}\n{err}".strip()
         else:
             merged = output or "(no output)"
