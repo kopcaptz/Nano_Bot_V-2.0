@@ -24,6 +24,9 @@ class BrowserAdapter(BaseAdapter):
         self._running = False
 
     async def start(self) -> None:
+        if self._running:
+            logger.debug("Browser adapter already running.")
+            return
         self._playwright = await async_playwright().start()
         self._browser = await self._playwright.chromium.launch(headless=True)
         self._page = await self._browser.new_page()
@@ -31,6 +34,9 @@ class BrowserAdapter(BaseAdapter):
         logger.info("Browser adapter started.")
 
     async def stop(self) -> None:
+        if not self._running:
+            logger.debug("Browser adapter already stopped.")
+            return
         if self._page:
             await self._page.close()
             self._page = None

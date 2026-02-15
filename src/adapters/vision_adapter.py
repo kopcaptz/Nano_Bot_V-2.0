@@ -25,11 +25,17 @@ class VisionAdapter(BaseAdapter):
         self._running = False
 
     async def start(self) -> None:
+        if self._running:
+            logger.debug("Vision adapter already running.")
+            return
         self.screenshots_dir.mkdir(parents=True, exist_ok=True)
         self._running = True
         logger.info("Vision adapter started. screenshots_dir=%s", self.screenshots_dir)
 
     async def stop(self) -> None:
+        if not self._running:
+            logger.debug("Vision adapter already stopped.")
+            return
         self._running = False
         logger.info("Vision adapter stopped.")
 

@@ -30,6 +30,10 @@ class TelegramAdapter(BaseAdapter):
 
     async def start(self) -> None:
         """Start telegram polling and register handlers."""
+        if self._running:
+            logger.debug("Telegram adapter already running.")
+            return
+
         if not self.token:
             logger.warning("Telegram adapter skipped: TELEGRAM_BOT_TOKEN is empty.")
             return
@@ -53,6 +57,9 @@ class TelegramAdapter(BaseAdapter):
 
     async def stop(self) -> None:
         """Stop telegram polling gracefully."""
+        if not self._running and self._app is None:
+            logger.debug("Telegram adapter already stopped.")
+            return
         self._running = False
         if self._app is None:
             return

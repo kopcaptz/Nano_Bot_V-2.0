@@ -35,11 +35,17 @@ class SystemAdapter(BaseAdapter):
         self._running = False
 
     async def start(self) -> None:
+        if self._running:
+            logger.debug("System adapter already running.")
+            return
         self.workspace.mkdir(parents=True, exist_ok=True)
         self._running = True
         logger.info("System adapter started. Workspace=%s", self.workspace.resolve())
 
     async def stop(self) -> None:
+        if not self._running:
+            logger.debug("System adapter already stopped.")
+            return
         self._running = False
         logger.info("System adapter stopped.")
 
