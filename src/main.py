@@ -75,22 +75,9 @@ async def main() -> None:
         logger.info("Shutdown requested: %s", reason)
         shutdown_event.set()
 
-    adapter_tasks: list[asyncio.Task] = []
-
-    for name, adapter in adapters.items():
-        task = asyncio.create_task(adapter.start(), name=f"{name}-adapter")
-        adapter_tasks.append(task)
-
-        def _adapter_done(done_task: asyncio.Task, adapter_name: str = name) -> None:
-            if done_task.cancelled():
-                return
-            exc = done_task.exception()
-            if exc:
-                logger.exception("Adapter '%s' failed: %s", adapter_name, exc)
-                if not shutdown_event.is_set():
-                    shutdown_event.set()
-
-        task.add_done_callback(_adapter_done)
+    # Per specification: start all adapters concurrently via asyncio.gather
+    # Adapter start() initializes resources; long-running adapters manage own loop.
+    await asyncio.gather(*(adapter.start() for adapter in adapters.values()))
 
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -110,11 +97,6 @@ async def main() -> None:
 
     logger.info("Stopping adapters...")
     await asyncio.gather(*(adapter.stop() for adapter in adapters.values()), return_exceptions=True)
-
-    for task in adapter_tasks:
-        if not task.done():
-            task.cancel()
-    await asyncio.gather(*adapter_tasks, return_exceptions=True)
 
     logger.info("Nano Bot V-2.0 stopped.")
 
