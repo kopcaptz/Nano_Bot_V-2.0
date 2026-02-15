@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 
 class LLMRouter:
     """Route commands to OpenRouter models."""
+    ALLOWED_CONTEXT_ROLES = {"system", "user", "assistant"}
 
     def __init__(
         self,
@@ -73,7 +74,10 @@ class LLMRouter:
             role = item.get("role")
             content = item.get("content")
             if isinstance(role, str) and isinstance(content, str):
-                messages.append({"role": role, "content": content})
+                normalized_role = role.strip().lower()
+                if normalized_role not in self.ALLOWED_CONTEXT_ROLES:
+                    continue
+                messages.append({"role": normalized_role, "content": content})
 
         messages.append({"role": "user", "content": command})
         return messages
