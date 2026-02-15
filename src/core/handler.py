@@ -72,7 +72,7 @@ class CommandHandler:
         history = self.memory.get_history(chat_id)
 
         try:
-            adapter_result = await self._try_adapter_shortcuts(command)
+            adapter_result = await self._try_adapter_shortcuts(chat_id=chat_id, command=command)
             if adapter_result is not None:
                 reply_text = adapter_result
             else:
@@ -91,16 +91,21 @@ class CommandHandler:
             {"chat_id": chat_id, "text": reply_text},
         )
 
-    async def _try_adapter_shortcuts(self, command: str) -> str | None:
+    async def _try_adapter_shortcuts(self, chat_id: int, command: str) -> str | None:
         """
         Handle simple MVP adapter commands.
 
         Supported:
+        - /clear_history
         - /system <cmd>
         - /browser_open <url>
         - /browser_text [url]
         - /screenshot <filename>
         """
+        if command == "/clear_history":
+            self.memory.clear_history(chat_id)
+            return "История диалога очищена."
+
         if command.startswith("/system "):
             system = self.adapters.get("system")
             if system is None:
