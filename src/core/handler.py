@@ -125,6 +125,9 @@ class CommandHandler:
             self.memory.clear_history(chat_id)
             return "История диалога очищена."
 
+        if command == "/system":
+            return "Укажите команду: /system <команда>"
+
         if command.startswith("/system "):
             system = self.adapters.get("system")
             if system is None:
@@ -133,6 +136,9 @@ class CommandHandler:
             if not command_to_run:
                 return "Укажите команду: /system <команда>"
             return await system.run_app(command_to_run)
+
+        if command == "/browser_open":
+            return "Укажите URL: /browser_open <url>"
 
         if command.startswith("/browser_open "):
             browser = self.adapters.get("browser")
@@ -150,6 +156,9 @@ class CommandHandler:
                 return "Browser adapter недоступен."
             url = command.removeprefix("/browser_text").strip() or None
             return await browser.get_page_text(url)
+
+        if command == "/screenshot":
+            return "Укажите имя файла: /screenshot <filename.png>"
 
         if command.startswith("/screenshot "):
             vision = self.adapters.get("vision")
