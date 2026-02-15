@@ -92,6 +92,9 @@ class CommandHandler:
         except PermissionError as exc:
             logger.warning("Permission denied for command chat_id=%s: %s", chat_id, exc)
             reply_text = f"⛔ {exc}"
+        except RuntimeError as exc:
+            logger.warning("Runtime adapter error for chat_id=%s: %s", chat_id, exc)
+            reply_text = f"⚠️ {exc}"
         except Exception:  # noqa: BLE001
             logger.exception("Command processing failed")
             reply_text = "Не удалось обработать команду из-за внутренней ошибки."

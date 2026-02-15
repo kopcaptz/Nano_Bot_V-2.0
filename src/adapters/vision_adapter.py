@@ -7,6 +7,7 @@ from pathlib import Path
 
 import mss
 from PIL import Image
+from mss.exception import ScreenShotError
 
 try:  # script mode
     from adapters.base_adapter import BaseAdapter
@@ -18,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 class VisionAdapter(BaseAdapter):
     """Adapter for screenshot operations."""
+    ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
 
     def __init__(self, workspace: Path) -> None:
         self.workspace = workspace
@@ -56,16 +58,24 @@ class VisionAdapter(BaseAdapter):
         requested = Path(safe_name)
         if requested.name != safe_name:
             raise PermissionError("Filename must not include directory traversal.")
+        ext = requested.suffix.lower()
+        if ext not in self.ALLOWED_EXTENSIONS:
+            raise PermissionError(
+                f"Unsupported screenshot extension '{ext}'. Allowed: {sorted(self.ALLOWED_EXTENSIONS)}"
+            )
         output_path = (self.screenshots_dir / requested.name).resolve()
         screenshots_root = self.screenshots_dir.resolve()
         if output_path != screenshots_root and screenshots_root not in output_path.parents:
             raise PermissionError("Screenshot path is outside screenshots directory.")
 
-        with mss.mss() as sct:
-            monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
-            shot = sct.grab(monitor)
-            image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
-            image.save(output_path)
+        try:
+            with mss.mss() as sct:
+                monitor = sct.monitors[1] if len(sct.monitors) > 1 else sct.monitors[0]
+                shot = sct.grab(monitor)
+                image = Image.frombytes("RGB", shot.size, shot.bgra, "raw", "BGRX")
+                image.save(output_path)
+        except ScreenShotError as exc:
+            raise RuntimeError(f"Cannot capture screenshot in current environment: {exc}") from exc
 
         return str(output_path)
 
