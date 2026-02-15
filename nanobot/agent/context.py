@@ -8,6 +8,7 @@ from typing import Any
 
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
+from nanobot.memory.db import semantic_search
 
 
 class ContextBuilder:
@@ -148,6 +149,24 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
         if channel and chat_id:
             system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
         messages.append({"role": "system", "content": system_prompt})
+
+        # Автоматическое обогащение контекста из памяти
+        if current_message and len(current_message) > 10:
+            try:
+                relevant_facts = semantic_search(current_message, limit=5)
+                if relevant_facts:
+                    facts_text = "\n".join(
+                        f"- [{f.get('domain', 'general')}] {f.get('category', '?')} → {f.get('key', '?')}: {f.get('value', '?')}"
+                        for f in relevant_facts
+                        if f.get("distance", 1.0) < 0.7
+                    )
+                    if facts_text:
+                        messages.append({
+                            "role": "system",
+                            "content": f"Relevant facts from your memory:\n{facts_text}",
+                        })
+            except Exception:
+                pass
 
         # History
         messages.extend(history)
