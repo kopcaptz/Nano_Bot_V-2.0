@@ -20,9 +20,17 @@ class EventBus:
     def __init__(self) -> None:
         self._subscribers: dict[str, list[EventCallback]] = defaultdict(list)
 
+    @staticmethod
+    def _is_async_callback(callback: Callable[[Any], Any]) -> bool:
+        """Return True for async functions, async bound methods, or async __call__ objects."""
+        if inspect.iscoroutinefunction(callback):
+            return True
+        call_attr = getattr(callback, "__call__", None)
+        return bool(call_attr and inspect.iscoroutinefunction(call_attr))
+
     async def subscribe(self, event_type: str, callback: EventCallback) -> None:
         """Register callback for an event type."""
-        if not inspect.iscoroutinefunction(callback):
+        if not self._is_async_callback(callback):
             logger.error("Refusing non-async subscriber for event '%s': %s", event_type, callback)
             return
         if callback in self._subscribers[event_type]:
@@ -36,7 +44,7 @@ class EventBus:
         callbacks = self._subscribers.get(event_type, [])
         logger.info("Event published: %s | subscribers=%d", event_type, len(callbacks))
         for callback in callbacks:
-            if not inspect.iscoroutinefunction(callback):
+            if not self._is_async_callback(callback):
                 logger.error("Event callback must be async; skipping: %s", callback)
                 continue
             try:
