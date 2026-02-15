@@ -29,8 +29,9 @@ class SystemAdapter(BaseAdapter):
         "tasklist": ["ps", "-e"],
     }
 
-    def __init__(self, workspace: Path) -> None:
+    def __init__(self, workspace: Path, command_timeout: float = 20.0) -> None:
         self.workspace = workspace
+        self.command_timeout = command_timeout
         self._running = False
 
     async def start(self) -> None:
@@ -79,6 +80,10 @@ class SystemAdapter(BaseAdapter):
         if os.name != "nt" and executable in self.POSIX_ALIASES:
             alias = self.POSIX_ALIASES[executable]
             exec_parts = [*alias, *parts[1:]]
+        if os.name != "nt" and executable == "ping":
+            has_count = any(arg in {"-c", "-n"} for arg in exec_parts[1:])
+            if not has_count:
+                exec_parts = [*exec_parts, "-c", "4"]
 
         try:
             if os.name == "nt":
@@ -100,7 +105,16 @@ class SystemAdapter(BaseAdapter):
         except FileNotFoundError:
             return f"Command not found: {executable}"
 
-        stdout, stderr = await process.communicate()
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                process.communicate(),
+                timeout=self.command_timeout,
+            )
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.communicate()
+            return f"Command timed out after {self.command_timeout:.1f}s"
+
         output = stdout.decode("utf-8", errors="replace").strip()
         err = stderr.decode("utf-8", errors="replace").strip()
         if process.returncode != 0 and err:
