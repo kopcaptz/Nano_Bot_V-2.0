@@ -22,6 +22,7 @@ from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.subagent import SubagentManager
+from nanobot.memory.db import add_reflection
 from nanobot.session.manager import Session, SessionManager
 
 
@@ -278,6 +279,13 @@ class AgentLoop:
                             )
                             if insight:
                                 logger.info(f"Reflection: {insight[:200]}")
+                                add_reflection(
+                                    tool_name=tool_name,
+                                    tool_args=args_str[:500],
+                                    error_text=result[:500],
+                                    insight=insight[:1000],
+                                    session_key=msg.session_key,
+                                )
                         except Exception as e:
                             logger.warning(f"Reflection failed: {e}")
 
@@ -331,6 +339,13 @@ class AgentLoop:
                     )
                     if insight:
                         logger.info(f"Reflection: {insight[:200]}")
+                        add_reflection(
+                            tool_name=tool_name,
+                            tool_args=json.dumps(tool_args, ensure_ascii=False)[:500],
+                            error_text=result[:500],
+                            insight=insight[:1000],
+                            session_key=msg.session_key,
+                        )
                 except Exception as e:
                     logger.warning(f"Reflection failed: {e}")
 
@@ -464,6 +479,13 @@ class AgentLoop:
                             )
                             if insight:
                                 logger.info(f"Reflection: {insight[:200]}")
+                                add_reflection(
+                                    tool_name=tool_name,
+                                    tool_args=args_str[:500],
+                                    error_text=result[:500],
+                                    insight=insight[:1000],
+                                    session_key=msg.session_key,
+                                )
                         except Exception as e:
                             logger.warning(f"Reflection failed: {e}")
 
@@ -581,6 +603,13 @@ class AgentLoop:
                             )
                             if insight:
                                 logger.info(f"Reflection: {insight[:200]}")
+                                add_reflection(
+                                    tool_name=tool_call.name,
+                                    tool_args=args_str[:500],
+                                    error_text=result[:500],
+                                    insight=insight[:1000],
+                                    session_key=f"{origin_channel}:{origin_chat_id}",
+                                )
                         except Exception as e:
                             logger.warning(f"Reflection failed: {e}")
 

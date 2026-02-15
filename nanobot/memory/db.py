@@ -94,6 +94,19 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reflections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tool_name TEXT NOT NULL,
+                tool_args TEXT,
+                error_text TEXT NOT NULL,
+                insight TEXT NOT NULL,
+                session_key TEXT,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
 
         # Индексы для ускорения частых выборок и поиска.
         conn.execute(
@@ -107,6 +120,9 @@ def init_db() -> None:
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_token_usage_date ON token_usage(date)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_reflections_tool ON reflections(tool_name)"
         )
 
         conn.commit()
@@ -356,6 +372,45 @@ def get_recent_conversations(limit: int = 100) -> list[dict[str, Any]]:
         ).fetchall()
 
     return [_row_to_dict(row) for row in reversed(rows)]
+
+
+# ============== REFLECTIONS ==============
+
+
+def add_reflection(
+    tool_name: str,
+    tool_args: str,
+    error_text: str,
+    insight: str,
+    session_key: str | None = None,
+) -> None:
+    """Сохраняет рефлексию об ошибке инструмента."""
+    init_db()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO reflections (tool_name, tool_args, error_text, insight, session_key, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (tool_name, tool_args, error_text, insight, session_key, _now_iso()),
+        )
+        conn.commit()
+
+
+def get_recent_reflections(
+    tool_name: str | None = None, limit: int = 10
+) -> list[dict[str, Any]]:
+    """Возвращает последние рефлексии, опционально фильтруя по инструменту."""
+    init_db()
+    if tool_name:
+        query = "SELECT * FROM reflections WHERE tool_name = ? ORDER BY id DESC LIMIT ?"
+        params = (tool_name, limit)
+    else:
+        query = "SELECT * FROM reflections ORDER BY id DESC LIMIT ?"
+        params = (limit,)
+    with _connect() as conn:
+        rows = conn.execute(query, params).fetchall()
+    return [_row_to_dict(row) for row in rows]
 
 
 # ============== TOKEN USAGE ==============
