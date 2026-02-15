@@ -95,4 +95,5 @@ python src/main.py
 - `/screenshot <filename.png>` — сделать скриншот в `AGENT_WORKSPACE/screenshots/`
 - Для `/screenshot`: если расширение не указано, автоматически используется `.png`
 - `/ocr <image_path>` — OCR-заглушка (пока возвращает `OCR not implemented yet`)
+- Для `/ocr`: принимаются расширения `.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.gif`
 

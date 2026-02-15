@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 class VisionAdapter(BaseAdapter):
     """Adapter for screenshot operations."""
     ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp"}
+    OCR_ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 
     def __init__(self, workspace: Path) -> None:
         self.workspace = workspace
@@ -96,5 +97,11 @@ class VisionAdapter(BaseAdapter):
         safe_path = self._resolve_workspace_path(image_path)
         if not safe_path.exists() or not safe_path.is_file():
             raise FileNotFoundError(f"Image not found: {safe_path}")
+        ext = safe_path.suffix.lower()
+        if ext not in self.OCR_ALLOWED_EXTENSIONS:
+            raise PermissionError(
+                f"Unsupported OCR image extension '{ext}'. "
+                f"Allowed: {sorted(self.OCR_ALLOWED_EXTENSIONS)}"
+            )
         return "OCR not implemented yet"
 
