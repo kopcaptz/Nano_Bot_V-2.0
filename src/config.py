@@ -18,6 +18,8 @@ class Config:
     telegram_bot_token: str
     openrouter_api_key: str
     openrouter_model: str
+    llm_context_max_messages: int
+    memory_max_messages: int
     agent_workspace: Path
     log_level: str
 
@@ -48,6 +50,21 @@ def _resolve_workspace_path(raw_path: str) -> Path:
     return Path(raw_path).expanduser()
 
 
+def _parse_positive_int(raw_value: str | None, default: int, name: str) -> int:
+    """Parse positive integer config value with safe fallback."""
+    if raw_value is None or not raw_value.strip():
+        return default
+    try:
+        parsed = int(raw_value.strip())
+    except ValueError:
+        logging.warning("%s must be integer. Using default: %d", name, default)
+        return default
+    if parsed <= 0:
+        logging.warning("%s must be > 0. Using default: %d", name, default)
+        return default
+    return parsed
+
+
 def load_config() -> Config:
     """Load config values from .env and validate critical paths/settings."""
     load_dotenv()
@@ -75,10 +92,23 @@ def load_config() -> Config:
         openrouter_model = "kimi/kimi-k2.5"
         logging.warning("OPENROUTER_MODEL is empty. Falling back to kimi/kimi-k2.5.")
 
+    llm_context_max_messages = _parse_positive_int(
+        os.getenv("LLM_CONTEXT_MAX_MESSAGES"),
+        default=40,
+        name="LLM_CONTEXT_MAX_MESSAGES",
+    )
+    memory_max_messages = _parse_positive_int(
+        os.getenv("MEMORY_MAX_MESSAGES"),
+        default=200,
+        name="MEMORY_MAX_MESSAGES",
+    )
+
     return Config(
         telegram_bot_token=telegram_token,
         openrouter_api_key=openrouter_api_key,
         openrouter_model=openrouter_model,
+        llm_context_max_messages=llm_context_max_messages,
+        memory_max_messages=memory_max_messages,
         agent_workspace=workspace_path,
         log_level=log_level,
     )

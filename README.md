@@ -59,6 +59,8 @@ cp .env.example .env
 - `TELEGRAM_BOT_TOKEN`
 - `OPENROUTER_API_KEY`
 - `OPENROUTER_MODEL`
+- `LLM_CONTEXT_MAX_MESSAGES` (опционально, по умолчанию `40`)
+- `MEMORY_MAX_MESSAGES` (опционально, по умолчанию `200`)
 - `AGENT_WORKSPACE`
 - `LOG_LEVEL`
 

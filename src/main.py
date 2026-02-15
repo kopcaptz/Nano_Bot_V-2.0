@@ -37,10 +37,11 @@ async def main() -> None:
     config = load_config()
 
     event_bus = EventBus()
-    memory = CrystalMemory()
+    memory = CrystalMemory(max_messages_per_chat=config.memory_max_messages)
     llm_router = LLMRouter(
         api_key=config.openrouter_api_key,
         model=config.openrouter_model,
+        max_context_messages=config.llm_context_max_messages,
     )
 
     telegram_adapter = TelegramAdapter(event_bus=event_bus, token=config.telegram_bot_token)
