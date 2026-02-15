@@ -50,6 +50,8 @@ def init_db() -> None:
                 category TEXT NOT NULL,
                 key TEXT NOT NULL,
                 value TEXT NOT NULL,
+                domain TEXT,
+                sub_category TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 UNIQUE(category, key)
@@ -148,56 +150,23 @@ def add_fact(
     """Добавляет факт или обновляет значение, если факт уже есть."""
     init_db()
     now = _now_iso()
-    domain_val = domain if domain and domain.strip() else None
+    domain_val = domain if domain and str(domain).strip() else None
     sub_val = sub_category if sub_category and str(sub_category).strip() else None
 
-    # Ensure facts table has domain/sub_category columns (migration on first use)
     with _connect() as conn:
-        try:
-            conn.execute("SELECT domain FROM facts LIMIT 1")
-        except sqlite3.OperationalError:
-            try:
-                conn.execute("ALTER TABLE facts ADD COLUMN domain TEXT DEFAULT NULL")
-            except sqlite3.OperationalError as e:
-                if "duplicate column" not in str(e).lower():
-                    raise
-            try:
-                conn.execute("ALTER TABLE facts ADD COLUMN sub_category TEXT DEFAULT NULL")
-            except sqlite3.OperationalError as e:
-                if "duplicate column" not in str(e).lower():
-                    raise
-            conn.commit()
-
-    with _connect() as conn:
-        cursor = conn.execute("PRAGMA table_info(facts)")
-        columns = [row[1] for row in cursor.fetchall()]
-
-        if "domain" in columns and "sub_category" in columns:
-            conn.execute(
-                """
-                INSERT INTO facts (category, key, value, domain, sub_category, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(category, key)
-                DO UPDATE SET
-                    value = excluded.value,
-                    domain = COALESCE(excluded.domain, domain),
-                    sub_category = COALESCE(excluded.sub_category, sub_category),
-                    updated_at = excluded.updated_at
-                """,
-                (category, key, value, domain_val, sub_val, now, now),
-            )
-        else:
-            conn.execute(
-                """
-                INSERT INTO facts (category, key, value, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(category, key)
-                DO UPDATE SET
-                    value = excluded.value,
-                    updated_at = excluded.updated_at
-                """,
-                (category, key, value, now, now),
-            )
+        conn.execute(
+            """
+            INSERT INTO facts (category, key, value, domain, sub_category, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(category, key)
+            DO UPDATE SET
+                value = excluded.value,
+                domain = COALESCE(excluded.domain, domain),
+                sub_category = COALESCE(excluded.sub_category, sub_category),
+                updated_at = excluded.updated_at
+            """,
+            (category, key, value, domain_val, sub_val, now, now),
+        )
         conn.commit()
 
     # Синхронизируем факт в ChromaDB для семантического поиска.
