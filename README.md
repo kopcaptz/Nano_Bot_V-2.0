@@ -93,4 +93,5 @@ python src/main.py
 - `/browser_open <url>` — открыть страницу в браузере
 - `/browser_text [url]` — получить текст страницы
 - `/screenshot <filename.png>` — сделать скриншот в `AGENT_WORKSPACE/screenshots/`
+- `/ocr <image_path>` — OCR-заглушка (пока возвращает `OCR not implemented yet`)
 

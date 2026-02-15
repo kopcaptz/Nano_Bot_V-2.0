@@ -29,7 +29,8 @@ class CommandHandler:
         "/system <cmd> — выполнить безопасную системную команду\n"
         "/browser_open <url> — открыть страницу\n"
         "/browser_text [url] — получить текст страницы\n"
-        "/screenshot <filename.png> — сделать скриншот"
+        "/screenshot <filename.png> — сделать скриншот\n"
+        "/ocr <image_path> — выполнить OCR-заглушку"
     )
 
     def __init__(
@@ -115,6 +116,7 @@ class CommandHandler:
         - /browser_open <url>
         - /browser_text [url]
         - /screenshot <filename>
+        - /ocr <image_path>
         """
         if command == "/help":
             return self.HELP_TEXT
@@ -170,6 +172,19 @@ class CommandHandler:
                 return "Укажите имя файла: /screenshot <filename.png>"
             saved = vision.take_screenshot(filename)
             return f"Скриншот сохранён: {saved}"
+
+        if command == "/ocr":
+            return "Укажите путь к изображению: /ocr <image_path>"
+
+        if command.startswith("/ocr "):
+            vision = self.adapters.get("vision")
+            if vision is None:
+                return "Vision adapter недоступен."
+            image_path = command.removeprefix("/ocr ").strip()
+            if not image_path:
+                return "Укажите путь к изображению: /ocr <image_path>"
+            result = vision.ocr_image(image_path)
+            return f"OCR: {result}"
 
         return None
 
