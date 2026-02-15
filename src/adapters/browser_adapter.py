@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlparse
 
 from playwright.async_api import Browser, Page, Playwright, async_playwright
 
@@ -16,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 class BrowserAdapter(BaseAdapter):
     """Adapter for basic browser automation tasks."""
+    ALLOWED_SCHEMES = {"http", "https", "data", "about"}
 
     def __init__(self) -> None:
         self._playwright: Playwright | None = None
@@ -58,8 +60,17 @@ class BrowserAdapter(BaseAdapter):
         if not self._running or self._page is None:
             raise RuntimeError("Browser adapter is not running.")
 
+    @classmethod
+    def _validate_url(cls, url: str) -> None:
+        parsed = urlparse(url)
+        if parsed.scheme not in cls.ALLOWED_SCHEMES:
+            raise PermissionError(
+                f"Unsupported URL scheme: '{parsed.scheme}'. Allowed: {sorted(cls.ALLOWED_SCHEMES)}"
+            )
+
     async def open_url(self, url: str) -> None:
         self._ensure_running()
+        self._validate_url(url)
         await self._page.goto(url, wait_until="domcontentloaded")
 
     async def get_page_text(self, url: str | None = None) -> str:
