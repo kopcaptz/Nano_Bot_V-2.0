@@ -28,6 +28,7 @@ except ModuleNotFoundError:  # package mode: import src.main
     from src.core.memory import CrystalMemory
 
 logger = logging.getLogger(__name__)
+START_TIMEOUT_SECONDS = 20.0
 STOP_TIMEOUT_SECONDS = 10.0
 
 
@@ -78,13 +79,22 @@ async def main() -> None:
 
     async def start_adapter(name: str, adapter: object) -> bool:
         try:
-            await adapter.start()
+            await asyncio.wait_for(adapter.start(), timeout=START_TIMEOUT_SECONDS)
             is_running = bool(getattr(adapter, "is_running", getattr(adapter, "_running", True)))
             if is_running:
                 logger.info("Adapter '%s' started.", name)
             else:
                 logger.warning("Adapter '%s' did not enter running state.", name)
             return is_running
+        except asyncio.TimeoutError:
+            logger.error(
+                "Adapter '%s' start timed out after %.1fs", name, START_TIMEOUT_SECONDS
+            )
+            try:
+                await asyncio.wait_for(adapter.stop(), timeout=STOP_TIMEOUT_SECONDS)
+            except Exception:  # noqa: BLE001
+                logger.exception("Adapter '%s' cleanup after start timeout failed.", name)
+            return False
         except Exception:  # noqa: BLE001
             logger.exception("Adapter '%s' failed to start.", name)
             return False
