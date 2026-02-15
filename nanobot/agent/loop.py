@@ -12,6 +12,7 @@ from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
 from nanobot.agent.context import ContextBuilder
+from nanobot.agent.reflection import Reflection
 from nanobot.agent.tools.policy import ToolPolicy
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
@@ -21,6 +22,7 @@ from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.subagent import SubagentManager
+from nanobot.memory.db import add_reflection
 from nanobot.session.manager import Session, SessionManager
 
 
@@ -64,6 +66,7 @@ class AgentLoop:
         self.context = ContextBuilder(workspace)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
+        self.reflection = Reflection(provider=provider, model=self.model)
         self.subagents = SubagentManager(
             provider=provider,
             workspace=workspace,
@@ -264,6 +267,28 @@ class AgentLoop:
 
                     # policy == ToolPolicy.ALLOW - execute normally
                     result = await self.tools.execute(tool_name, tool_args)
+
+                    # Reflection on tool error (insight logged only, LLM gets error via tool_result)
+                    if result.startswith("Error:"):
+                        logger.warning(f"Tool {tool_name} failed: {result[:200]}")
+                        try:
+                            insight = await self.reflection.analyze_trajectory(
+                                messages=messages,
+                                failed_tool_call={"name": tool_name, "arguments": tool_args},
+                                error_result=result,
+                            )
+                            if insight:
+                                logger.info(f"Reflection: {insight[:200]}")
+                                add_reflection(
+                                    tool_name=tool_name,
+                                    tool_args=args_str[:500],
+                                    error_text=result[:500],
+                                    insight=insight[:1000],
+                                    session_key=msg.session_key,
+                                )
+                        except Exception as e:
+                            logger.warning(f"Reflection failed: {e}")
+
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_name, result
                     )
@@ -302,6 +327,28 @@ class AgentLoop:
             tool_args = pending["tool_args"]
 
             result = await self.tools.execute(tool_name, tool_args)
+
+            # Reflection on tool error
+            if result.startswith("Error:"):
+                logger.warning(f"Tool {tool_name} failed: {result[:200]}")
+                try:
+                    insight = await self.reflection.analyze_trajectory(
+                        messages=pending["messages"],
+                        failed_tool_call={"name": tool_name, "arguments": tool_args},
+                        error_result=result,
+                    )
+                    if insight:
+                        logger.info(f"Reflection: {insight[:200]}")
+                        add_reflection(
+                            tool_name=tool_name,
+                            tool_args=json.dumps(tool_args, ensure_ascii=False)[:500],
+                            error_text=result[:500],
+                            insight=insight[:1000],
+                            session_key=msg.session_key,
+                        )
+                except Exception as e:
+                    logger.warning(f"Reflection failed: {e}")
+
             messages = self.context.add_tool_result(
                 pending["messages"],
                 pending["tool_call_id"],
@@ -420,6 +467,28 @@ class AgentLoop:
                         return None
 
                     result = await self.tools.execute(tool_name, tool_args)
+
+                    # Reflection on tool error
+                    if result.startswith("Error:"):
+                        logger.warning(f"Tool {tool_name} failed: {result[:200]}")
+                        try:
+                            insight = await self.reflection.analyze_trajectory(
+                                messages=messages,
+                                failed_tool_call={"name": tool_name, "arguments": tool_args},
+                                error_result=result,
+                            )
+                            if insight:
+                                logger.info(f"Reflection: {insight[:200]}")
+                                add_reflection(
+                                    tool_name=tool_name,
+                                    tool_args=args_str[:500],
+                                    error_text=result[:500],
+                                    insight=insight[:1000],
+                                    session_key=msg.session_key,
+                                )
+                        except Exception as e:
+                            logger.warning(f"Reflection failed: {e}")
+
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_name, result
                     )
@@ -519,13 +588,38 @@ class AgentLoop:
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info(f"Tool call: {tool_call.name}({args_str[:200]})")
                     result = await self.tools.execute(tool_call.name, tool_call.arguments)
+
+                    # Reflection on tool error
+                    if result.startswith("Error:"):
+                        logger.warning(f"Tool {tool_call.name} failed: {result[:200]}")
+                        try:
+                            insight = await self.reflection.analyze_trajectory(
+                                messages=messages,
+                                failed_tool_call={
+                                    "name": tool_call.name,
+                                    "arguments": tool_call.arguments,
+                                },
+                                error_result=result,
+                            )
+                            if insight:
+                                logger.info(f"Reflection: {insight[:200]}")
+                                add_reflection(
+                                    tool_name=tool_call.name,
+                                    tool_args=args_str[:500],
+                                    error_text=result[:500],
+                                    insight=insight[:1000],
+                                    session_key=f"{origin_channel}:{origin_chat_id}",
+                                )
+                        except Exception as e:
+                            logger.warning(f"Reflection failed: {e}")
+
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
                     )
             else:
                 final_content = response.content
                 break
-        
+
         if final_content is None:
             final_content = "Background task completed."
         
