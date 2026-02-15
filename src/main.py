@@ -78,7 +78,7 @@ async def main() -> None:
     async def start_adapter(name: str, adapter: object) -> bool:
         try:
             await adapter.start()
-            is_running = bool(getattr(adapter, "_running", True))
+            is_running = bool(getattr(adapter, "is_running", getattr(adapter, "_running", True)))
             if is_running:
                 logger.info("Adapter '%s' started.", name)
             else:
