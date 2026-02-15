@@ -101,6 +101,8 @@ class TelegramAdapter(BaseAdapter):
 
         raw_chat_id = event_data.get("chat_id")
         text = str(event_data.get("text", ""))
+        if not text.strip():
+            text = "(empty response)"
         if raw_chat_id is None:
             logger.warning("telegram.send.reply missed chat_id: %s", event_data)
             return
@@ -139,8 +141,10 @@ class TelegramAdapter(BaseAdapter):
             if split_at <= 0:
                 split_at = self.MAX_MESSAGE_LENGTH
 
-            chunks.append(remaining[:split_at].strip())
+            chunk = remaining[:split_at].strip()
+            if chunk:
+                chunks.append(chunk)
             remaining = remaining[split_at:].lstrip()
 
-        return chunks
+        return chunks or ["(empty response)"]
 
