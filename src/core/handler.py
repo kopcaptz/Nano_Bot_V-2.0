@@ -58,6 +58,9 @@ class CommandHandler:
             else:
                 history = self.memory.get_history(chat_id)
                 reply_text = await self.llm_router.process_command(command=command, context=history)
+        except PermissionError as exc:
+            logger.warning("Permission denied for command chat_id=%s: %s", chat_id, exc)
+            reply_text = f"⛔ {exc}"
         except Exception:  # noqa: BLE001
             logger.exception("Command processing failed")
             reply_text = "Не удалось обработать команду из-за внутренней ошибки."
