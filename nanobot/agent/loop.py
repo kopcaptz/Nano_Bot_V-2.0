@@ -13,7 +13,9 @@ from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.reflection import Reflection
+from nanobot.agent.skill_generator import SkillGenerator
 from nanobot.agent.tools.policy import ToolPolicy
+from nanobot.agent.tools.skill import CreateSkillTool
 from nanobot.agent.tools.registry import ToolRegistry
 from nanobot.agent.tools.filesystem import ReadFileTool, WriteFileTool, EditFileTool, ListDirTool
 from nanobot.agent.tools.shell import ExecTool
@@ -68,6 +70,11 @@ class AgentLoop:
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         self.reflection = Reflection(provider=provider, model=self.model)
+        self.skill_generator = SkillGenerator(
+            skills_dir=self.workspace / "skills",
+            provider=provider,
+            model=self.model,
+        )
         self.subagents = SubagentManager(
             provider=provider,
             workspace=workspace,
@@ -103,6 +110,13 @@ class AgentLoop:
 
         # Memory search
         self.tools.register(MemorySearchTool())
+
+        # Skill creation tool
+        create_skill_tool = CreateSkillTool(
+            skill_generator=self.skill_generator,
+            session_manager=self.sessions,
+        )
+        self.tools.register(create_skill_tool)
 
         # Message tool
         message_tool = MessageTool(send_callback=self.bus.publish_outbound)
@@ -171,6 +185,11 @@ class AgentLoop:
         # Get or create session
         session = self.sessions.get_or_create(msg.session_key)
 
+        # Update session key for create_skill tool
+        create_skill_tool = self.tools.get("create_skill")
+        if isinstance(create_skill_tool, CreateSkillTool):
+            create_skill_tool.set_session_key(msg.session_key)
+
         # Check if we're waiting for confirmation
         if session.pending_confirmation:
             return await self._handle_confirmation(session, msg)
@@ -232,6 +251,11 @@ class AgentLoop:
                 
                 # Execute tools (with policy check)
                 for tool_call in response.tool_calls:
+                    # Inject current messages for create_skill (needs full trajectory)
+                    create_skill_tool = self.tools.get("create_skill")
+                    if isinstance(create_skill_tool, CreateSkillTool):
+                        create_skill_tool.set_messages(messages)
+
                     tool_name = tool_call.name
                     tool_args = tool_call.arguments
                     args_str = json.dumps(tool_args, ensure_ascii=False)
@@ -303,7 +327,28 @@ class AgentLoop:
         
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
-        
+
+        # Анализ: стоит ли предложить создание навыка?
+        if iteration >= 5 and final_content:
+            successful_calls = 0
+            error_calls = 0
+            for m in messages:
+                if m.get("role") == "tool":
+                    content = m.get("content", "")
+                    if content.startswith("Error:"):
+                        error_calls += 1
+                    else:
+                        successful_calls += 1
+
+            if successful_calls >= 5 and error_calls <= 1:
+                skill_suggestion = (
+                    "\n\n---\n"
+                    "💡 This was a complex task with multiple steps. "
+                    "Would you like me to save this as a reusable skill? "
+                    "Just say 'save as skill' and give it a name."
+                )
+                final_content += skill_suggestion
+
         # Log response preview
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info(f"Response to {msg.channel}:{msg.sender_id}: {preview}")
@@ -435,6 +480,11 @@ class AgentLoop:
                 )
 
                 for tool_call in response.tool_calls:
+                    create_skill_tool = self.tools.get("create_skill")
+                    if isinstance(create_skill_tool, CreateSkillTool):
+                        create_skill_tool.set_session_key(msg.session_key)
+                        create_skill_tool.set_messages(messages)
+
                     tool_name = tool_call.name
                     tool_args = tool_call.arguments
                     args_str = json.dumps(tool_args, ensure_ascii=False)
@@ -589,6 +639,11 @@ class AgentLoop:
                 )
                 
                 for tool_call in response.tool_calls:
+                    create_skill_tool = self.tools.get("create_skill")
+                    if isinstance(create_skill_tool, CreateSkillTool):
+                        create_skill_tool.set_session_key(session_key)
+                        create_skill_tool.set_messages(messages)
+
                     args_str = json.dumps(tool_call.arguments, ensure_ascii=False)
                     logger.info(f"Tool call: {tool_call.name}({args_str[:200]})")
                     result = await self.tools.execute(tool_call.name, tool_call.arguments)
