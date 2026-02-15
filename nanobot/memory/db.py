@@ -247,6 +247,47 @@ def get_facts_by_category(category: str) -> list[dict[str, Any]]:
     return [_row_to_dict(row) for row in rows]
 
 
+def get_facts_filtered(
+    domain: str | None = None,
+    category: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    """Возвращает факты с фильтрацией по domain и/или category."""
+    init_db()
+    conditions: list[str] = []
+    params: list[Any] = []
+    if domain:
+        conditions.append("domain = ?")
+        params.append(domain)
+    if category:
+        conditions.append("category = ?")
+        params.append(category)
+
+    where = " AND ".join(conditions) if conditions else "1=1"
+    params.append(limit)
+
+    with _connect() as conn:
+        try:
+            rows = conn.execute(
+                f"SELECT * FROM facts WHERE {where} ORDER BY updated_at DESC LIMIT ?",
+                params,
+            ).fetchall()
+        except sqlite3.OperationalError:
+            # Fallback when domain/sub_category columns don't exist yet
+            if category:
+                rows = conn.execute(
+                    "SELECT * FROM facts WHERE category = ? ORDER BY updated_at DESC LIMIT ?",
+                    (category, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT * FROM facts ORDER BY updated_at DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
+
+    return [_row_to_dict(row) for row in rows]
+
+
 def search_facts(query: str) -> list[dict[str, Any]]:
     """Ищет факты по LIKE в полях category, key и value."""
     init_db()
