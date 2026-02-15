@@ -1,183 +1,297 @@
-"""Central command coordinator for Nano Bot V-2.0 (Tool-Using Agent)."""
+"""Central command coordinator for Nano Bot V-2.0."""
+
 from __future__ import annotations
 
-import json
 import logging
-from typing import Any, TYPE_CHECKING
+from typing import Any
 
-try:
+try:  # script mode: python src/main.py
     from core.event_bus import EventBus
     from core.llm_router import LLMRouter
     from core.memory import CrystalMemory
-except ModuleNotFoundError:
+except ModuleNotFoundError:  # package mode: import src.main
     from src.core.event_bus import EventBus
     from src.core.llm_router import LLMRouter
     from src.core.memory import CrystalMemory
 
-if TYPE_CHECKING:
-    from src.core.tool_registry import ToolRegistry
-
 logger = logging.getLogger(__name__)
-
-MAX_AGENT_ITERATIONS = 5
 
 
 class CommandHandler:
-    """Coordinates incoming commands, LLM processing, and tool execution."""
+    """Coordinates incoming commands, LLM processing, and adapter actions."""
+    DEFAULT_MAX_COMMAND_LENGTH = 8000
+    NON_PERSISTENT_COMMANDS = {"/ping", "/help", "/status", "/clear_history"}
+    HELP_TEXT = (
+        "Доступные команды:\n"
+        "/ping — проверить доступность бота\n"
+        "/help — показать эту справку\n"
+        "/status — показать состояние адаптеров\n"
+        "/clear_history — очистить историю диалога\n"
+        "/system <cmd> — выполнить безопасную системную команду\n"
+        "/browser_open <url> — открыть страницу\n"
+        "/browser_text [url] — получить текст страницы\n"
+        "/screenshot <filename.png> — сделать скриншот\n"
+        "/ocr <image_path> — выполнить OCR-заглушку"
+    )
 
     def __init__(
         self,
         event_bus: EventBus,
         llm_router: LLMRouter,
         memory: CrystalMemory,
-        tool_registry: ToolRegistry,
+        max_command_length: int | None = None,
         **adapters: Any,
     ) -> None:
         self.event_bus = event_bus
         self.llm_router = llm_router
         self.memory = memory
-        self.tool_registry = tool_registry
-        self.system = adapters.get("system")
-        self.browser = adapters.get("browser")
-        self.vision = adapters.get("vision")
+        self.adapters = adapters
+        self.max_command_length = max_command_length or self.DEFAULT_MAX_COMMAND_LENGTH
+        self._initialized = False
 
     async def initialize(self) -> None:
-        """Subscribe to relevant events."""
-        await self.event_bus.subscribe(
-            "telegram.command.received", self.handle_command
-        )
+        """Register handler subscriptions on the event bus."""
+        if self._initialized:
+            return
+        await self.event_bus.subscribe("telegram.command.received", self.handle_command)
+        self._initialized = True
 
-    def _build_system_prompt(self) -> str:
-        """Build the dynamic system prompt with all available tools."""
-        tool_names = ", ".join(self.tool_registry.get_tool_names())
-        return (
-            "You are Nano Bot — a helpful AI assistant running locally on the user's Windows machine. "
-            "You have real tools to interact with the system: manage files, run commands, open browser, "
-            "take screenshots, search Gmail, and more.\n\n"
-            "IMPORTANT RULES:\n"
-            "1. When the user asks to DO something (create file, check email, open browser), "
-            "you MUST use the appropriate tool. Do NOT just describe what you would do.\n"
-            "2. You can chain multiple tool calls in sequence.\n"
-            "3. If a tool returns an error, explain it to the user and suggest alternatives.\n"
-            "4. For simple conversation (greetings, questions), respond normally without tools.\n\n"
-            f"Available tools: {tool_names}"
-        )
-
-    async def _agent_loop(self, command: str, chat_id: int) -> str:
-        """The main agent loop: Think -> Act -> Observe -> Repeat."""
-        system_prompt = self._build_system_prompt()
-        history = self.memory.get_history(chat_id)
-
-        messages = [
-            {"role": "system", "content": system_prompt},
-            *history,
-            {"role": "user", "content": command},
-        ]
-
-        tools = self.tool_registry.get_tools_for_llm()
-
-        for iteration in range(MAX_AGENT_ITERATIONS):
-            logger.info("Agent loop iteration %d for chat %d", iteration + 1, chat_id)
-
-            llm_response = await self.llm_router.process_command(
-                command="",
-                context=[],
-                tools=tools,
-                messages_override=messages,
-            )
-
-            tool_calls = llm_response.get("tool_calls")
-
-            # No tool calls — this is the final text answer
-            if not tool_calls:
-                return LLMRouter.extract_text(llm_response.get("content", ""))
-
-            # Append assistant message with tool_calls to conversation
-            messages.append(llm_response)
-
-            # Execute each tool call
-            for tc in tool_calls:
-                fn = tc.get("function", {})
-                tool_name = fn.get("name", "")
-                raw_args = fn.get("arguments", "{}")
-
-                try:
-                    params = json.loads(raw_args)
-                except json.JSONDecodeError:
-                    tool_result = f"Error: Could not parse tool arguments: {raw_args}"
-                else:
-                    tool_result = await self.tool_registry.dispatch(tool_name, params)
-
-                # Ensure tool_result is a string
-                if not isinstance(tool_result, str):
-                    tool_result = str(tool_result)
-
-                messages.append({
-                    "role": "tool",
-                    "tool_call_id": tc["id"],
-                    "content": tool_result,
-                })
-
-        # Max iterations reached — ask LLM for a final summary
-        messages.append({
-            "role": "user",
-            "content": "Please summarize what you have done so far.",
-        })
-        final = await self.llm_router.process_command(
-            command="", context=[], messages_override=messages
-        )
-        return LLMRouter.extract_text(final.get("content", ""))
-
-    async def _try_shortcuts(self, command: str) -> str | None:
-        """Handle slash commands that bypass the LLM."""
-        parts = command.strip().split()
-        if not parts:
-            return None
-        cmd, args = parts[0], parts[1:]
-
-        try:
-            if cmd == "/system" and args and self.system:
-                return await self.system.run_app(" ".join(args))
-            if cmd == "/browser_open" and args and self.browser:
-                await self.browser.open_url(args[0])
-                return f"Opened: {args[0]}"
-            if cmd == "/browser_text" and self.browser:
-                return await self.browser.get_page_text(args[0] if args else None)
-            if cmd == "/screenshot" and args and self.vision:
-                return self.vision.take_screenshot(args[0])
-        except Exception as e:
-            logger.exception("Shortcut error: %s", command)
-            return f"Error: {e}"
-
-        return None
+    async def shutdown(self) -> None:
+        """Unregister handler subscriptions from the event bus."""
+        if not self._initialized:
+            return
+        await self.event_bus.unsubscribe("telegram.command.received", self.handle_command)
+        self._initialized = False
 
     async def handle_command(self, event_data: dict[str, Any]) -> None:
-        """Main entry point for handling user commands."""
+        """Handle user command received from Telegram."""
         raw_chat_id = event_data.get("chat_id")
         try:
             chat_id = int(raw_chat_id)
         except (TypeError, ValueError):
             logger.warning("Invalid chat_id in command event: %s", raw_chat_id)
             return
+
         command = str(event_data.get("command", "")).strip()
-        if not command:
+        command_preview = command[:200] + ("..." if len(command) > 200 else "")
+        logger.info("Handling command for chat_id=%s: %s", chat_id, command_preview)
+        normalized_command = self._normalize_command(command)
+
+        if not normalized_command:
             await self.event_bus.publish(
                 "telegram.send.reply",
-                {"chat_id": chat_id, "text": "Empty command. Send a text request."},
+                {"chat_id": chat_id, "text": "Пустая команда. Отправьте текстовый запрос."},
+            )
+            return
+        if len(normalized_command) > self.max_command_length:
+            await self.event_bus.publish(
+                "telegram.send.reply",
+                {
+                    "chat_id": chat_id,
+                    "text": (
+                        f"Команда слишком длинная ({len(normalized_command)} символов). "
+                        f"Максимум: {self.max_command_length}."
+                    ),
+                },
             )
             return
 
-        self.memory.add_message(chat_id, "user", command)
+        history = self.memory.get_history(chat_id)
 
-        # Try slash shortcuts first
-        shortcut = await self._try_shortcuts(command)
-        if shortcut is not None:
-            response_text = shortcut
-        else:
-            # Run the full agent loop
-            response_text = await self._agent_loop(command, chat_id)
+        try:
+            adapter_result = await self._try_adapter_shortcuts(
+                chat_id=chat_id, command=normalized_command
+            )
+            if adapter_result is not None:
+                reply_text = adapter_result
+            else:
+                reply_text = await self.llm_router.process_command(
+                    command=normalized_command,
+                    context=history,
+                )
+        except PermissionError as exc:
+            logger.warning("Permission denied for command chat_id=%s: %s", chat_id, exc)
+            reply_text = f"⛔ {exc}"
+        except FileNotFoundError as exc:
+            logger.warning("Missing file for command chat_id=%s: %s", chat_id, exc)
+            reply_text = f"📁 {exc}"
+        except RuntimeError as exc:
+            logger.warning("Runtime adapter error for chat_id=%s: %s", chat_id, exc)
+            reply_text = f"⚠️ {exc}"
+        except Exception:  # noqa: BLE001
+            logger.exception("Command processing failed")
+            reply_text = "Не удалось обработать команду из-за внутренней ошибки."
 
-        self.memory.add_message(chat_id, "assistant", response_text)
-        await self.event_bus.publish(
-            "telegram.send.reply", {"chat_id": chat_id, "text": response_text}
+        should_persist = (
+            normalized_command not in self.NON_PERSISTENT_COMMANDS
+            and not normalized_command.startswith("/")
         )
+        if should_persist:
+            self.memory.add_message(chat_id, "user", normalized_command)
+            self.memory.add_message(chat_id, "assistant", reply_text)
+        await self.event_bus.publish(
+            "telegram.send.reply",
+            {"chat_id": chat_id, "text": reply_text},
+        )
+
+    async def _try_adapter_shortcuts(self, chat_id: int, command: str) -> str | None:
+        """
+        Handle simple MVP adapter commands.
+
+        Supported:
+        - /ping
+        - /help
+        - /status
+        - /clear_history
+        - /system <cmd>
+        - /browser_open <url>
+        - /browser_text [url]
+        - /screenshot <filename>
+        - /ocr <image_path>
+        """
+        if command == "/ping":
+            return "pong"
+
+        if command == "/help":
+            return self.HELP_TEXT
+
+        if command == "/status":
+            return self._build_status_text(chat_id)
+
+        if command == "/clear_history":
+            self.memory.clear_history(chat_id)
+            return "История диалога очищена."
+
+        if command == "/system":
+            return "Укажите команду: /system <команда>"
+
+        if command.startswith("/system "):
+            system = self.adapters.get("system")
+            if system is None:
+                return "System adapter недоступен."
+            command_to_run = command.removeprefix("/system ").strip()
+            if not command_to_run:
+                return "Укажите команду: /system <команда>"
+            return await system.run_app(command_to_run)
+
+        if command == "/browser_open":
+            return "Укажите URL: /browser_open <url>"
+
+        if command.startswith("/browser_open "):
+            browser = self.adapters.get("browser")
+            if browser is None:
+                return "Browser adapter недоступен."
+            url = command.removeprefix("/browser_open ").strip()
+            if not url:
+                return "Укажите URL: /browser_open <url>"
+            normalized_url = self._normalize_url(url)
+            await browser.open_url(normalized_url)
+            return f"Открыл страницу: {normalized_url}"
+
+        if command.startswith("/browser_text"):
+            browser = self.adapters.get("browser")
+            if browser is None:
+                return "Browser adapter недоступен."
+            raw_url = command.removeprefix("/browser_text").strip() or None
+            normalized_url = self._normalize_url(raw_url) if raw_url else None
+            return await browser.get_page_text(normalized_url)
+
+        if command == "/screenshot":
+            return "Укажите имя файла: /screenshot <filename.png>"
+
+        if command.startswith("/screenshot "):
+            vision = self.adapters.get("vision")
+            if vision is None:
+                return "Vision adapter недоступен."
+            filename = command.removeprefix("/screenshot ").strip()
+            if not filename:
+                return "Укажите имя файла: /screenshot <filename.png>"
+            saved = vision.take_screenshot(filename)
+            return f"Скриншот сохранён: {saved}"
+
+        if command == "/ocr":
+            return "Укажите путь к изображению: /ocr <image_path>"
+
+        if command.startswith("/ocr "):
+            vision = self.adapters.get("vision")
+            if vision is None:
+                return "Vision adapter недоступен."
+            image_path = command.removeprefix("/ocr ").strip()
+            if not image_path:
+                return "Укажите путь к изображению: /ocr <image_path>"
+            result = vision.ocr_image(image_path)
+            return f"OCR: {result}"
+
+        if command.startswith("/"):
+            return "Неизвестная команда. Используйте /help."
+
+        return None
+
+    def _build_status_text(self, chat_id: int) -> str:
+        """Build human-readable status text for adapters and memory."""
+        lines = ["Статус Nano Bot V-2.0:"]
+        for name, adapter in self.adapters.items():
+            running = bool(getattr(adapter, "is_running", getattr(adapter, "_running", False)))
+            marker = "✅" if running else "⚪"
+            lines.append(f"{marker} {name}: {'running' if running else 'stopped'}")
+
+        history_size = len(self.memory.get_history(chat_id))
+        lines.append(f"🧠 history messages: {history_size}")
+        lines.append(
+            "🚌 bus subscribers(telegram.command.received): "
+            f"{self.event_bus.get_subscriber_count('telegram.command.received')}"
+        )
+        lines.append(
+            "🚌 bus subscribers(telegram.send.reply): "
+            f"{self.event_bus.get_subscriber_count('telegram.send.reply')}"
+        )
+        event_types = self.event_bus.list_event_types()
+        lines.append(
+            "🚌 bus event types: "
+            + (", ".join(event_types) if event_types else "(none)")
+        )
+        model_name = getattr(self.llm_router, "model", "unknown")
+        lines.append(f"🤖 model: {model_name}")
+        context_limit = getattr(self.llm_router, "max_context_messages", None)
+        if isinstance(context_limit, int):
+            lines.append(f"🧠 llm context limit: {context_limit}")
+        request_timeout = getattr(self.llm_router, "request_timeout_seconds", None)
+        if isinstance(request_timeout, (int, float)):
+            lines.append(f"⏱ llm request timeout: {float(request_timeout):.1f}s")
+
+        system_adapter = self.adapters.get("system")
+        workspace_path = getattr(system_adapter, "workspace", None)
+        if workspace_path is not None:
+            lines.append(f"📂 workspace: {workspace_path}")
+        system_timeout = getattr(system_adapter, "command_timeout", None)
+        if isinstance(system_timeout, (int, float)):
+            lines.append(f"⏱ system command timeout: {float(system_timeout):.1f}s")
+        memory_limit = getattr(self.memory, "max_messages_per_chat", None)
+        if isinstance(memory_limit, int):
+            lines.append(f"🧠 memory limit: {memory_limit}")
+        lines.append(f"🧾 max command length: {self.max_command_length}")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _normalize_url(url: str) -> str:
+        """Normalize URL and add https:// when scheme is omitted."""
+        lowered = url.lower()
+        if lowered.startswith(("http://", "https://", "data:", "about:")):
+            return url
+        return f"https://{url}"
+
+    @staticmethod
+    def _normalize_command(command: str) -> str:
+        """Normalize slash-command name to lowercase while preserving arguments."""
+        text = command.strip()
+        if not text.startswith("/"):
+            return text
+
+        parts = text.split(maxsplit=1)
+        base = parts[0].lower()
+        if "@" in base:
+            base = base.split("@", 1)[0]
+        if len(parts) == 1:
+            return base
+        return f"{base} {parts[1]}"
+

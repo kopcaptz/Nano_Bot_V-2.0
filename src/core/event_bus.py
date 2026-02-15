@@ -20,9 +20,17 @@ class EventBus:
     def __init__(self) -> None:
         self._subscribers: dict[str, list[EventCallback]] = defaultdict(list)
 
+    @staticmethod
+    def _is_async_callback(callback: Callable[[Any], Any]) -> bool:
+        """Return True for async functions, async bound methods, or async __call__ objects."""
+        if inspect.iscoroutinefunction(callback):
+            return True
+        call_attr = getattr(callback, "__call__", None)
+        return bool(call_attr and inspect.iscoroutinefunction(call_attr))
+
     async def subscribe(self, event_type: str, callback: EventCallback) -> None:
         """Register callback for an event type."""
-        if not inspect.iscoroutinefunction(callback):
+        if not self._is_async_callback(callback):
             logger.error("Refusing non-async subscriber for event '%s': %s", event_type, callback)
             return
         if callback in self._subscribers[event_type]:
@@ -31,12 +39,27 @@ class EventBus:
         self._subscribers[event_type].append(callback)
         logger.debug("Subscriber added for event '%s'.", event_type)
 
+    async def unsubscribe(self, event_type: str, callback: EventCallback) -> None:
+        """Remove callback subscription for an event type."""
+        callbacks = self._subscribers.get(event_type)
+        if not callbacks:
+            return
+
+        try:
+            callbacks.remove(callback)
+            logger.debug("Subscriber removed for event '%s'.", event_type)
+        except ValueError:
+            return
+
+        if not callbacks:
+            self._subscribers.pop(event_type, None)
+
     async def publish(self, event_type: str, data: Any) -> None:
         """Publish event to all subscribers as detached async tasks."""
-        callbacks = self._subscribers.get(event_type, [])
+        callbacks = tuple(self._subscribers.get(event_type, []))
         logger.info("Event published: %s | subscribers=%d", event_type, len(callbacks))
         for callback in callbacks:
-            if not inspect.iscoroutinefunction(callback):
+            if not self._is_async_callback(callback):
                 logger.error("Event callback must be async; skipping: %s", callback)
                 continue
             try:
@@ -51,6 +74,14 @@ class EventBus:
 
             task = asyncio.create_task(result)
             task.add_done_callback(self._log_task_error)
+
+    def get_subscriber_count(self, event_type: str) -> int:
+        """Return number of subscribers for a specific event type."""
+        return len(self._subscribers.get(event_type, []))
+
+    def list_event_types(self) -> list[str]:
+        """Return sorted list of registered event types."""
+        return sorted(self._subscribers.keys())
 
     @staticmethod
     def _log_task_error(task: asyncio.Task) -> None:

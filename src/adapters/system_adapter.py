@@ -23,15 +23,18 @@ class SystemAdapter(BaseAdapter):
     """Adapter for interacting with local OS in a restricted way."""
 
     SAFE_COMMANDS = {"dir", "tasklist", "ping", "echo"}
-    SHELL_META_PATTERN = re.compile(r"(?:&&|\|\||[;|<>`]|[$][(])")
+    SHELL_META_PATTERN = re.compile(r"(?:[;&|<>`]|[$][(]|\r|\n)")
     POSIX_ALIASES: dict[str, list[str]] = {
         "dir": ["ls"],
         "tasklist": ["ps", "-e"],
     }
 
+    MAX_COMMAND_LENGTH = 512
+    MAX_OUTPUT_CHARS = 12000
+
     def __init__(self, workspace: Path, command_timeout: float = 20.0) -> None:
         self.workspace = workspace
-        self.command_timeout = command_timeout
+        self.command_timeout = command_timeout if command_timeout > 0 else 20.0
         self._running = False
 
     async def start(self) -> None:
@@ -48,6 +51,10 @@ class SystemAdapter(BaseAdapter):
             return
         self._running = False
         logger.info("System adapter stopped.")
+
+    def _ensure_running(self) -> None:
+        if not self._running:
+            raise RuntimeError("System adapter is not running.")
 
     def _is_safe_path(self, path: str) -> bool:
         """Validate that path resolves under workspace root."""
@@ -66,14 +73,25 @@ class SystemAdapter(BaseAdapter):
 
     async def run_app(self, command: str) -> str:
         """Run an allow-listed command only."""
+        self._ensure_running()
         command = command.strip()
         if not command:
             raise PermissionError("Empty command is not allowed.")
+        if len(command) > self.MAX_COMMAND_LENGTH:
+            raise PermissionError(
+                f"Command is too long ({len(command)} chars). "
+                f"Max length: {self.MAX_COMMAND_LENGTH}."
+            )
 
         if self.SHELL_META_PATTERN.search(command):
             raise PermissionError("Command contains forbidden shell operators.")
 
-        parts = shlex.split(command, posix=(os.name != "nt"))
+        try:
+            parts = shlex.split(command, posix=(os.name != "nt"))
+        except ValueError as exc:
+            raise PermissionError(f"Invalid command syntax: {exc}") from exc
+        if not parts:
+            raise PermissionError("Empty command is not allowed.")
         executable = parts[0].lower() if parts else ""
         if executable not in self.SAFE_COMMANDS:
             raise PermissionError(
@@ -85,7 +103,7 @@ class SystemAdapter(BaseAdapter):
             alias = self.POSIX_ALIASES[executable]
             exec_parts = [*alias, *parts[1:]]
         if os.name != "nt" and executable == "ping":
-            has_count = any(arg in {"-c", "-n"} for arg in exec_parts[1:])
+            has_count = any(arg == "-c" or arg.startswith("-c") for arg in exec_parts[1:])
             if not has_count:
                 exec_parts = [*exec_parts, "-c", "4"]
 
@@ -121,30 +139,45 @@ class SystemAdapter(BaseAdapter):
 
         output = stdout.decode("utf-8", errors="replace").strip()
         err = stderr.decode("utf-8", errors="replace").strip()
-        if process.returncode != 0 and err:
-            return f"Command failed ({process.returncode}): {err}"
-        if err:
-            return f"{output}\n{err}".strip()
-        return output or "(no output)"
+        if process.returncode != 0:
+            details = "\n".join(part for part in (output, err) if part).strip()
+            if not details:
+                details = "(no output)"
+            merged = f"Command failed ({process.returncode}): {details}"
+        elif err:
+            merged = f"{output}\n{err}".strip()
+        else:
+            merged = output or "(no output)"
+
+        if len(merged) > self.MAX_OUTPUT_CHARS:
+            return (
+                f"{merged[:self.MAX_OUTPUT_CHARS]}\n"
+                f"... (truncated {len(merged) - self.MAX_OUTPUT_CHARS} chars)"
+            )
+        return merged
 
     def read_file(self, path: str) -> str:
+        self._ensure_running()
         safe_path = self._resolve_safe_path(path)
         if not safe_path.exists() or not safe_path.is_file():
             raise FileNotFoundError(f"File not found: {safe_path}")
         return safe_path.read_text(encoding="utf-8")
 
     def write_file(self, path: str, content: str) -> None:
+        self._ensure_running()
         safe_path = self._resolve_safe_path(path)
         safe_path.parent.mkdir(parents=True, exist_ok=True)
         safe_path.write_text(content, encoding="utf-8")
 
     def list_dir(self, path: str) -> list[str]:
+        self._ensure_running()
         safe_path = self._resolve_safe_path(path)
         if not safe_path.exists() or not safe_path.is_dir():
             raise NotADirectoryError(f"Directory not found: {safe_path}")
         return sorted(item.name for item in safe_path.iterdir())
 
     def get_clipboard(self) -> str:
+        self._ensure_running()
         try:
             return pyperclip.paste()
         except pyperclip.PyperclipException as exc:
@@ -152,6 +185,7 @@ class SystemAdapter(BaseAdapter):
             return ""
 
     def set_clipboard(self, content: str) -> None:
+        self._ensure_running()
         try:
             pyperclip.copy(content)
         except pyperclip.PyperclipException as exc:

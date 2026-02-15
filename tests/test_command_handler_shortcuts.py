@@ -1,0 +1,101 @@
+"""Async regression tests for CommandHandler shortcuts."""
+
+from __future__ import annotations
+
+import asyncio
+import sys
+import unittest
+from pathlib import Path
+from typing import Any
+
+
+SRC_DIR = Path(__file__).resolve().parents[1] / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
+
+from core.event_bus import EventBus  # noqa: E402
+from core.handler import CommandHandler  # noqa: E402
+from core.memory import CrystalMemory  # noqa: E402
+
+
+class DummyLLMRouter:
+    """Simple in-memory LLM stub for handler tests."""
+
+    def __init__(self) -> None:
+        self.model = "dummy/model"
+        self.max_context_messages = 4
+        self.request_timeout_seconds = 1.0
+        self.calls: list[tuple[str, list[dict[str, str]]]] = []
+
+    async def process_command(self, command: str, context: list[dict[str, str]]) -> str:
+        self.calls.append((command, [dict(item) for item in context]))
+        return "llm-result"
+
+
+class CommandHandlerShortcutsTests(unittest.IsolatedAsyncioTestCase):
+    """Covers slash-command shortcut behavior and persistence rules."""
+
+    async def asyncSetUp(self) -> None:
+        self.event_bus = EventBus()
+        self.memory = CrystalMemory()
+        self.llm = DummyLLMRouter()
+        self.handler = CommandHandler(self.event_bus, self.llm, self.memory)
+        await self.handler.initialize()
+        self.replies: list[dict[str, Any]] = []
+        await self.event_bus.subscribe("telegram.send.reply", self._capture_reply)
+
+    async def asyncTearDown(self) -> None:
+        await self.handler.shutdown()
+
+    async def _capture_reply(self, payload: dict[str, Any]) -> None:
+        self.replies.append(dict(payload))
+
+    async def _publish_command(self, chat_id: int, command: str) -> dict[str, Any]:
+        await self.event_bus.publish(
+            "telegram.command.received",
+            {"chat_id": chat_id, "command": command},
+        )
+        await asyncio.sleep(0.05)
+        self.assertTrue(self.replies, msg="Expected at least one reply event")
+        return self.replies[-1]
+
+    async def test_ping_returns_pong_and_is_not_persisted(self) -> None:
+        """`/ping` must bypass LLM and avoid memory pollution."""
+        reply = await self._publish_command(chat_id=7001, command="/ping")
+        self.assertEqual(reply["text"], "pong")
+        self.assertEqual(self.llm.calls, [])
+        self.assertEqual(self.memory.get_history(7001), [])
+
+    async def test_unknown_slash_returns_help_hint_without_llm_call(self) -> None:
+        """Unknown slash commands should not hit the LLM path."""
+        reply = await self._publish_command(chat_id=7002, command="/unknown arg")
+        self.assertEqual(reply["text"], "Неизвестная команда. Используйте /help.")
+        self.assertEqual(self.llm.calls, [])
+        self.assertEqual(self.memory.get_history(7002), [])
+
+    async def test_status_shortcut_is_not_persisted(self) -> None:
+        """Known slash shortcuts should stay out of conversation history."""
+        reply = await self._publish_command(chat_id=7004, command="/status")
+        self.assertIn("Статус Nano Bot V-2.0:", reply["text"])
+        self.assertEqual(self.llm.calls, [])
+        self.assertEqual(self.memory.get_history(7004), [])
+
+    async def test_regular_text_goes_to_llm_and_persists_turns(self) -> None:
+        """Non-slash text must call LLM and persist user+assistant messages."""
+        reply = await self._publish_command(chat_id=7003, command="hello bot")
+        self.assertEqual(reply["text"], "llm-result")
+        self.assertEqual(len(self.llm.calls), 1)
+        self.assertEqual(self.llm.calls[0][0], "hello bot")
+
+        history = self.memory.get_history(7003)
+        self.assertEqual(
+            history,
+            [
+                {"role": "user", "content": "hello bot"},
+                {"role": "assistant", "content": "llm-result"},
+            ],
+        )
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

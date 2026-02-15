@@ -1,72 +1,106 @@
-"""LLM routing and interaction layer for Nano Bot V-2.0."""
+"""OpenRouter LLM integration layer."""
+
 from __future__ import annotations
 
 import logging
-from typing import Any
 
+import openai
 from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
 
 
 class LLMRouter:
-    """Handles communication with the LLM provider (OpenRouter)."""
+    """Route commands to OpenRouter models."""
+    ALLOWED_CONTEXT_ROLES = {"system", "user", "assistant"}
 
-    def __init__(self, api_key: str, model: str) -> None:
-        if not api_key:
-            raise ValueError("OpenRouter API key is not set.")
-        self.client = AsyncOpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=api_key,
-        )
-        self.model = model
-
-    async def process_command(
+    def __init__(
         self,
-        command: str,
-        context: list[dict[str, Any]],
-        tools: list[dict] | None = None,
-        messages_override: list[dict] | None = None,
-    ) -> dict[str, Any]:
-        """Send command to LLM and get a response, optionally with tools."""
-        if messages_override:
-            messages = messages_override
-        else:
-            messages = [*context, {"role": "user", "content": command}]
+        api_key: str,
+        model: str,
+        request_timeout_seconds: float = 45.0,
+        max_context_messages: int = 40,
+    ) -> None:
+        self.api_key = api_key
+        self.model = model
+        self.request_timeout_seconds = request_timeout_seconds
+        self.max_context_messages = max_context_messages if max_context_messages > 0 else 40
+        self.client = AsyncOpenAI(
+            api_key=self.api_key,
+            base_url="https://openrouter.ai/api/v1",
+        )
 
-        kwargs: dict[str, Any] = {
-            "model": self.model,
-            "messages": messages,
-        }
-        if tools:
-            kwargs["tools"] = tools
-            kwargs["tool_choice"] = "auto"
+    async def process_command(self, command: str, context: list[dict]) -> str:
+        """Send user command + context to OpenRouter and return plain text response."""
+        if not self.api_key:
+            return "OPENROUTER_API_KEY не задан. Добавьте ключ в .env."
+
+        messages = self._build_messages(command=command, context=context)
 
         try:
-            response = await self.client.chat.completions.create(**kwargs)
-            return response.choices[0].message.model_dump()
-        except Exception as e:
-            logger.exception("Error communicating with LLM provider.")
-            return {
-                "role": "assistant",
-                "content": f"Error: Could not get response from LLM. {e}",
+            completion = await self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                timeout=self.request_timeout_seconds,
+            )
+            content = completion.choices[0].message.content
+            text = self._normalize_text_content(content)
+            return text or "LLM вернул пустой ответ."
+        except openai.RateLimitError:
+            logger.exception("OpenRouter rate limit exceeded")
+            return "Сервис LLM временно перегружен (rate limit). Попробуйте чуть позже."
+        except openai.APITimeoutError:
+            logger.exception("OpenRouter timeout")
+            return "LLM не ответил вовремя. Повторите запрос."
+        except openai.APIError:
+            logger.exception("OpenRouter API error")
+            return "Произошла ошибка API при обращении к LLM. Попробуйте снова."
+        except Exception:  # noqa: BLE001
+            logger.exception("Unexpected error while calling OpenRouter")
+            return "Неожиданная ошибка при обращении к LLM. Попробуйте позже."
+
+    def _build_messages(self, command: str, context: list[dict]) -> list[dict[str, str]]:
+        """Build bounded message list for OpenRouter call."""
+        messages: list[dict[str, str]] = [
+            {
+                "role": "system",
+                "content": (
+                    "You are Nano Bot V-2.0, a local system assistant. "
+                    "Use context to answer coherently and concisely."
+                ),
             }
+        ]
+        for item in context[-self.max_context_messages :]:
+            role = item.get("role")
+            content = item.get("content")
+            if isinstance(role, str) and isinstance(content, str):
+                normalized_role = role.strip().lower()
+                if normalized_role not in self.ALLOWED_CONTEXT_ROLES:
+                    continue
+                messages.append({"role": normalized_role, "content": content})
+
+        messages.append({"role": "user", "content": command})
+        return messages
 
     @staticmethod
-    def extract_text(content: Any) -> str:
-        """Safely extract text from LLM response content."""
+    def _normalize_text_content(content: object) -> str:
+        """Normalize OpenAI response content into a plain text string."""
         if isinstance(content, str):
-            return content
+            return content.strip()
+
         if isinstance(content, list):
-            chunks = []
+            text_chunks: list[str] = []
             for item in content:
                 if isinstance(item, dict):
-                    t = item.get("text")
-                    if isinstance(t, str):
-                        chunks.append(t)
-                else:
-                    t = getattr(item, "text", None)
-                    if isinstance(t, str):
-                        chunks.append(t)
-            return "\n".join(c.strip() for c in chunks if c.strip())
+                    maybe_text = item.get("text")
+                    if isinstance(maybe_text, str):
+                        text_chunks.append(maybe_text)
+                    continue
+
+                maybe_text_attr = getattr(item, "text", None)
+                if isinstance(maybe_text_attr, str):
+                    text_chunks.append(maybe_text_attr)
+            return "\n".join(chunk.strip() for chunk in text_chunks if chunk.strip())
+
         return ""
+
