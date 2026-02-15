@@ -93,8 +93,9 @@ class CommandHandler:
             logger.exception("Command processing failed")
             reply_text = "Не удалось обработать команду из-за внутренней ошибки."
 
-        self.memory.add_message(chat_id, "user", command)
-        self.memory.add_message(chat_id, "assistant", reply_text)
+        if command != "/clear_history":
+            self.memory.add_message(chat_id, "user", command)
+            self.memory.add_message(chat_id, "assistant", reply_text)
         await self.event_bus.publish(
             "telegram.send.reply",
             {"chat_id": chat_id, "text": reply_text},
