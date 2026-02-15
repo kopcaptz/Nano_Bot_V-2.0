@@ -99,11 +99,20 @@ class TelegramAdapter(BaseAdapter):
             logger.warning("Cannot send Telegram message: adapter not running.")
             return
 
-        chat_id = event_data.get("chat_id")
+        raw_chat_id = event_data.get("chat_id")
         text = str(event_data.get("text", ""))
-        if not chat_id:
+        if raw_chat_id is None:
             logger.warning("telegram.send.reply missed chat_id: %s", event_data)
             return
 
-        await self._app.bot.send_message(chat_id=chat_id, text=text)
+        try:
+            chat_id = int(raw_chat_id)
+        except (TypeError, ValueError):
+            logger.warning("telegram.send.reply has invalid chat_id: %s", raw_chat_id)
+            return
+
+        try:
+            await self._app.bot.send_message(chat_id=chat_id, text=text)
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to send telegram message to chat_id=%s", chat_id)
 
