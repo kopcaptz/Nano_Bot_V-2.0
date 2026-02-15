@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 class TelegramAdapter(BaseAdapter):
     """Telegram channel adapter."""
     MAX_MESSAGE_LENGTH = 4000
+    SEND_CHUNK_DELAY_SECONDS = 0.15
     BOT_COMMANDS = [
         BotCommand("start", "Запустить Nano Bot"),
         BotCommand("help", "Показать список команд"),
@@ -215,6 +217,7 @@ class TelegramAdapter(BaseAdapter):
                 await self._app.bot.send_message(chat_id=chat_id, text=chunk)
                 if idx < len(chunks) - 1:
                     logger.debug("Sent telegram chunk %d/%d", idx + 1, len(chunks))
+                    await asyncio.sleep(self.SEND_CHUNK_DELAY_SECONDS)
         except Exception:  # noqa: BLE001
             logger.exception("Failed to send telegram message to chat_id=%s", chat_id)
 
