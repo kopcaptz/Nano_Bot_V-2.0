@@ -38,7 +38,13 @@ class CommandHandler:
 
     async def handle_command(self, event_data: dict[str, Any]) -> None:
         """Handle user command received from Telegram."""
-        chat_id = int(event_data["chat_id"])
+        raw_chat_id = event_data.get("chat_id")
+        try:
+            chat_id = int(raw_chat_id)
+        except (TypeError, ValueError):
+            logger.warning("Invalid chat_id in command event: %s", raw_chat_id)
+            return
+
         command = str(event_data.get("command", "")).strip()
         logger.info("Handling command for chat_id=%s: %s", chat_id, command)
 
