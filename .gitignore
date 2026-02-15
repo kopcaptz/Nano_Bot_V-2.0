@@ -1,21 +1,7 @@
-.assets
 .env
-*.pyc
-dist/
-build/
-docs/
-*.egg-info/
-*.egg
-*.pyc
-*.pyo
-*.pyd
-*.pyw
-*.pyz
-*.pywz
-*.pyzz
-.venv/
 __pycache__/
-poetry.lock
-.pytest_cache/
-tests/
-botpy.log
+*.pyc
+*.log
+# Игнорировать все в рабочей директории, кроме .gitkeep
+workspace/*
+!workspace/.gitkeep
