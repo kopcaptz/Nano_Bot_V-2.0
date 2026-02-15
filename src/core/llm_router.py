@@ -13,9 +13,10 @@ logger = logging.getLogger(__name__)
 class LLMRouter:
     """Route commands to OpenRouter models."""
 
-    def __init__(self, api_key: str, model: str) -> None:
+    def __init__(self, api_key: str, model: str, request_timeout_seconds: float = 45.0) -> None:
         self.api_key = api_key
         self.model = model
+        self.request_timeout_seconds = request_timeout_seconds
         self.client = AsyncOpenAI(
             api_key=self.api_key,
             base_url="https://openrouter.ai/api/v1",
@@ -49,9 +50,11 @@ class LLMRouter:
             completion = await self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
+                timeout=self.request_timeout_seconds,
             )
             content = completion.choices[0].message.content
-            return (content or "").strip() or "LLM вернул пустой ответ."
+            text = self._normalize_text_content(content)
+            return text or "LLM вернул пустой ответ."
         except openai.RateLimitError:
             logger.exception("OpenRouter rate limit exceeded")
             return "Сервис LLM временно перегружен (rate limit). Попробуйте чуть позже."
@@ -64,4 +67,21 @@ class LLMRouter:
         except Exception:  # noqa: BLE001
             logger.exception("Unexpected error while calling OpenRouter")
             return "Неожиданная ошибка при обращении к LLM. Попробуйте позже."
+
+    @staticmethod
+    def _normalize_text_content(content: object) -> str:
+        """Normalize OpenAI response content into a plain text string."""
+        if isinstance(content, str):
+            return content.strip()
+
+        if isinstance(content, list):
+            text_chunks: list[str] = []
+            for item in content:
+                if isinstance(item, dict):
+                    maybe_text = item.get("text")
+                    if isinstance(maybe_text, str):
+                        text_chunks.append(maybe_text)
+            return "\n".join(chunk.strip() for chunk in text_chunks if chunk.strip())
+
+        return ""
 
