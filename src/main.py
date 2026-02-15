@@ -120,7 +120,16 @@ async def main() -> None:
         start_results = await asyncio.gather(
             *(start_adapter(name, adapter) for name, adapter in adapters.items())
         )
-        started_count = sum(1 for item in start_results if item)
+        started_names = [
+            name for name, is_started in zip(adapters.keys(), start_results, strict=False) if is_started
+        ]
+        skipped_names = [
+            name for name, is_started in zip(adapters.keys(), start_results, strict=False) if not is_started
+        ]
+        started_count = len(started_names)
+        logger.info("Running adapters: %s", ", ".join(started_names) if started_names else "(none)")
+        if skipped_names:
+            logger.warning("Not running adapters: %s", ", ".join(skipped_names))
         if started_count == 0:
             logger.error("No adapters are running; requesting shutdown.")
             await request_shutdown("no adapters running")
