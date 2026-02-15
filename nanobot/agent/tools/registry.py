@@ -3,6 +3,7 @@
 from typing import Any
 
 from nanobot.agent.tools.base import Tool
+from nanobot.agent.tools.policy import ToolPolicy
 
 
 class ToolRegistry:
@@ -26,7 +27,14 @@ class ToolRegistry:
     def get(self, name: str) -> Tool | None:
         """Get a tool by name."""
         return self._tools.get(name)
-    
+
+    def get_policy(self, name: str) -> ToolPolicy:
+        """Get the execution policy for a tool by name."""
+        tool = self.get(name)
+        if tool is None:
+            return ToolPolicy.DENY  # Unknown tools are denied
+        return tool.policy
+
     def has(self, name: str) -> bool:
         """Check if a tool is registered."""
         return name in self._tools
