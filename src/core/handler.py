@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 class CommandHandler:
     """Coordinates incoming commands, LLM processing, and adapter actions."""
     MAX_COMMAND_LENGTH = 8000
+    NON_PERSISTENT_COMMANDS = {"/help", "/status", "/clear_history"}
     HELP_TEXT = (
         "Доступные команды:\n"
         "/help — показать эту справку\n"
@@ -94,7 +95,7 @@ class CommandHandler:
             logger.exception("Command processing failed")
             reply_text = "Не удалось обработать команду из-за внутренней ошибки."
 
-        if command != "/clear_history":
+        if command not in self.NON_PERSISTENT_COMMANDS:
             self.memory.add_message(chat_id, "user", command)
             self.memory.add_message(chat_id, "assistant", reply_text)
         await self.event_bus.publish(
