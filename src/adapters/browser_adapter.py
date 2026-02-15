@@ -27,14 +27,19 @@ class BrowserAdapter(BaseAdapter):
         if self._running:
             logger.debug("Browser adapter already running.")
             return
-        self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(headless=True)
-        self._page = await self._browser.new_page()
-        self._running = True
-        logger.info("Browser adapter started.")
+        try:
+            self._playwright = await async_playwright().start()
+            self._browser = await self._playwright.chromium.launch(headless=True)
+            self._page = await self._browser.new_page()
+            self._running = True
+            logger.info("Browser adapter started.")
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to start browser adapter.")
+            await self.stop()
+            raise
 
     async def stop(self) -> None:
-        if not self._running:
+        if not self._running and self._playwright is None and self._browser is None and self._page is None:
             logger.debug("Browser adapter already stopped.")
             return
         if self._page:
@@ -49,14 +54,16 @@ class BrowserAdapter(BaseAdapter):
         self._running = False
         logger.info("Browser adapter stopped.")
 
+    def _ensure_running(self) -> None:
+        if not self._running or self._page is None:
+            raise RuntimeError("Browser adapter is not running.")
+
     async def open_url(self, url: str) -> None:
-        if self._page is None:
-            raise RuntimeError("Browser adapter is not started.")
+        self._ensure_running()
         await self._page.goto(url, wait_until="domcontentloaded")
 
     async def get_page_text(self, url: str | None = None) -> str:
-        if self._page is None:
-            raise RuntimeError("Browser adapter is not started.")
+        self._ensure_running()
         if url:
             await self.open_url(url)
         return await self._page.inner_text("body")
