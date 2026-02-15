@@ -72,20 +72,21 @@ class CommandHandler:
         command = str(event_data.get("command", "")).strip()
         command_preview = command[:200] + ("..." if len(command) > 200 else "")
         logger.info("Handling command for chat_id=%s: %s", chat_id, command_preview)
+        normalized_command = self._normalize_command(command)
 
-        if not command:
+        if not normalized_command:
             await self.event_bus.publish(
                 "telegram.send.reply",
                 {"chat_id": chat_id, "text": "Пустая команда. Отправьте текстовый запрос."},
             )
             return
-        if len(command) > self.MAX_COMMAND_LENGTH:
+        if len(normalized_command) > self.MAX_COMMAND_LENGTH:
             await self.event_bus.publish(
                 "telegram.send.reply",
                 {
                     "chat_id": chat_id,
                     "text": (
-                        f"Команда слишком длинная ({len(command)} символов). "
+                        f"Команда слишком длинная ({len(normalized_command)} символов). "
                         f"Максимум: {self.MAX_COMMAND_LENGTH}."
                     ),
                 },
@@ -95,11 +96,16 @@ class CommandHandler:
         history = self.memory.get_history(chat_id)
 
         try:
-            adapter_result = await self._try_adapter_shortcuts(chat_id=chat_id, command=command)
+            adapter_result = await self._try_adapter_shortcuts(
+                chat_id=chat_id, command=normalized_command
+            )
             if adapter_result is not None:
                 reply_text = adapter_result
             else:
-                reply_text = await self.llm_router.process_command(command=command, context=history)
+                reply_text = await self.llm_router.process_command(
+                    command=normalized_command,
+                    context=history,
+                )
         except PermissionError as exc:
             logger.warning("Permission denied for command chat_id=%s: %s", chat_id, exc)
             reply_text = f"⛔ {exc}"
@@ -113,8 +119,8 @@ class CommandHandler:
             logger.exception("Command processing failed")
             reply_text = "Не удалось обработать команду из-за внутренней ошибки."
 
-        if command not in self.NON_PERSISTENT_COMMANDS:
-            self.memory.add_message(chat_id, "user", command)
+        if normalized_command not in self.NON_PERSISTENT_COMMANDS:
+            self.memory.add_message(chat_id, "user", normalized_command)
             self.memory.add_message(chat_id, "assistant", reply_text)
         await self.event_bus.publish(
             "telegram.send.reply",
@@ -216,4 +222,17 @@ class CommandHandler:
         history_size = len(self.memory.get_history(chat_id))
         lines.append(f"🧠 history messages: {history_size}")
         return "\n".join(lines)
+
+    @staticmethod
+    def _normalize_command(command: str) -> str:
+        """Normalize slash-command name to lowercase while preserving arguments."""
+        text = command.strip()
+        if not text.startswith("/"):
+            return text
+
+        parts = text.split(maxsplit=1)
+        base = parts[0].lower()
+        if len(parts) == 1:
+            return base
+        return f"{base} {parts[1]}"
 
