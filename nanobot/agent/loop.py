@@ -327,7 +327,28 @@ class AgentLoop:
         
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
-        
+
+        # Анализ: стоит ли предложить создание навыка?
+        if iteration >= 5 and final_content:
+            successful_calls = 0
+            error_calls = 0
+            for m in messages:
+                if m.get("role") == "tool":
+                    content = m.get("content", "")
+                    if content.startswith("Error:"):
+                        error_calls += 1
+                    else:
+                        successful_calls += 1
+
+            if successful_calls >= 5 and error_calls <= 1:
+                skill_suggestion = (
+                    "\n\n---\n"
+                    "💡 This was a complex task with multiple steps. "
+                    "Would you like me to save this as a reusable skill? "
+                    "Just say 'save as skill' and give it a name."
+                )
+                final_content += skill_suggestion
+
         # Log response preview
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info(f"Response to {msg.channel}:{msg.sender_id}: {preview}")
