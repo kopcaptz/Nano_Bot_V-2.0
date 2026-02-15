@@ -65,21 +65,24 @@ class TelegramAdapter(BaseAdapter):
 
     async def stop(self) -> None:
         """Stop telegram polling gracefully."""
-        if not self._running and self._app is None:
+        if not self._running and self._app is None and not self._reply_subscribed:
             logger.debug("Telegram adapter already stopped.")
             return
-        self._running = False
-        if self._app is None:
-            return
 
-        logger.info("Stopping Telegram adapter...")
-        try:
-            await self._app.updater.stop()
-        except Exception:  # noqa: BLE001
-            logger.debug("Telegram updater already stopped.")
-        await self._app.stop()
-        await self._app.shutdown()
-        self._app = None
+        self._running = False
+        if self._app is not None:
+            logger.info("Stopping Telegram adapter...")
+            try:
+                await self._app.updater.stop()
+            except Exception:  # noqa: BLE001
+                logger.debug("Telegram updater already stopped.")
+            await self._app.stop()
+            await self._app.shutdown()
+            self._app = None
+
+        if self._reply_subscribed:
+            await self.event_bus.unsubscribe("telegram.send.reply", self.send_message)
+            self._reply_subscribed = False
 
     async def _handle_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Reply to /start command."""

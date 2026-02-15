@@ -39,9 +39,24 @@ class EventBus:
         self._subscribers[event_type].append(callback)
         logger.debug("Subscriber added for event '%s'.", event_type)
 
+    async def unsubscribe(self, event_type: str, callback: EventCallback) -> None:
+        """Remove callback subscription for an event type."""
+        callbacks = self._subscribers.get(event_type)
+        if not callbacks:
+            return
+
+        try:
+            callbacks.remove(callback)
+            logger.debug("Subscriber removed for event '%s'.", event_type)
+        except ValueError:
+            return
+
+        if not callbacks:
+            self._subscribers.pop(event_type, None)
+
     async def publish(self, event_type: str, data: Any) -> None:
         """Publish event to all subscribers as detached async tasks."""
-        callbacks = self._subscribers.get(event_type, [])
+        callbacks = tuple(self._subscribers.get(event_type, []))
         logger.info("Event published: %s | subscribers=%d", event_type, len(callbacks))
         for callback in callbacks:
             if not self._is_async_callback(callback):
