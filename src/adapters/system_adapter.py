@@ -41,7 +41,10 @@ class SystemAdapter(BaseAdapter):
     def _is_safe_path(self, path: str) -> bool:
         """Validate that path resolves under workspace root."""
         resolved_path = Path(path).expanduser().resolve()
-        return str(resolved_path).startswith(str(self.workspace.resolve()))
+        workspace_resolved = self.workspace.resolve()
+        workspace_str = str(workspace_resolved)
+        resolved_str = str(resolved_path)
+        return resolved_str == workspace_str or resolved_str.startswith(workspace_str + os.sep)
 
     def _resolve_safe_path(self, path: str) -> Path:
         candidate = Path(path).expanduser()
