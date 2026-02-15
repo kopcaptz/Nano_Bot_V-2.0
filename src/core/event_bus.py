@@ -39,5 +39,5 @@ class EventBus:
             return
         exc = task.exception()
         if exc:
-            logger.exception("Event callback task failed: %s", exc)
+            logger.error("Event callback task failed: %s", exc)
 

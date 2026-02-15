@@ -24,6 +24,10 @@ class SystemAdapter(BaseAdapter):
 
     SAFE_COMMANDS = {"dir", "tasklist", "ping", "echo"}
     SHELL_META_PATTERN = re.compile(r"(?:&&|\|\||[;|<>`]|[$][(])")
+    POSIX_ALIASES: dict[str, list[str]] = {
+        "dir": ["ls"],
+        "tasklist": ["ps", "-e"],
+    }
 
     def __init__(self, workspace: Path) -> None:
         self.workspace = workspace
@@ -71,19 +75,24 @@ class SystemAdapter(BaseAdapter):
                 f"Command '{executable}' is not allowed. Allowed: {sorted(self.SAFE_COMMANDS)}"
             )
 
+        exec_parts = parts
+        if os.name != "nt" and executable in self.POSIX_ALIASES:
+            alias = self.POSIX_ALIASES[executable]
+            exec_parts = [*alias, *parts[1:]]
+
         try:
             if os.name == "nt":
                 process = await asyncio.create_subprocess_exec(
                     "cmd",
                     "/c",
-                    *parts,
+                    *exec_parts,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=self.workspace,
                 )
             else:
                 process = await asyncio.create_subprocess_exec(
-                    *parts,
+                    *exec_parts,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                     cwd=self.workspace,
