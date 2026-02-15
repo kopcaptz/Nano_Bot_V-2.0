@@ -263,6 +263,8 @@ class CommandHandler:
 
         parts = text.split(maxsplit=1)
         base = parts[0].lower()
+        if "@" in base:
+            base = base.split("@", 1)[0]
         if len(parts) == 1:
             return base
         return f"{base} {parts[1]}"
