@@ -23,7 +23,7 @@ class SystemAdapter(BaseAdapter):
     """Adapter for interacting with local OS in a restricted way."""
 
     SAFE_COMMANDS = {"dir", "tasklist", "ping", "echo"}
-    SHELL_META_PATTERN = re.compile(r"(?:&&|\|\||[;|<>`]|[$][(])")
+    SHELL_META_PATTERN = re.compile(r"(?:[;&|<>`]|[$][(]|\r|\n)")
     POSIX_ALIASES: dict[str, list[str]] = {
         "dir": ["ls"],
         "tasklist": ["ps", "-e"],
