@@ -14,7 +14,10 @@ class CrystalMemory:
         """Append message to chat history."""
         if chat_id not in self._messages:
             self._messages[chat_id] = []
-        self._messages[chat_id].append({"role": role, "content": content})
+        normalized_role = (role or "user").strip().lower()
+        if normalized_role not in {"user", "assistant", "system"}:
+            normalized_role = "user"
+        self._messages[chat_id].append({"role": normalized_role, "content": str(content)})
         if len(self._messages[chat_id]) > self.max_messages_per_chat:
             overflow = len(self._messages[chat_id]) - self.max_messages_per_chat
             self._messages[chat_id] = self._messages[chat_id][overflow:]
