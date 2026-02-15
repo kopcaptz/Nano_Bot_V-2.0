@@ -13,10 +13,17 @@ logger = logging.getLogger(__name__)
 class LLMRouter:
     """Route commands to OpenRouter models."""
 
-    def __init__(self, api_key: str, model: str, request_timeout_seconds: float = 45.0) -> None:
+    def __init__(
+        self,
+        api_key: str,
+        model: str,
+        request_timeout_seconds: float = 45.0,
+        max_context_messages: int = 40,
+    ) -> None:
         self.api_key = api_key
         self.model = model
         self.request_timeout_seconds = request_timeout_seconds
+        self.max_context_messages = max_context_messages if max_context_messages > 0 else 40
         self.client = AsyncOpenAI(
             api_key=self.api_key,
             base_url="https://openrouter.ai/api/v1",
@@ -27,22 +34,7 @@ class LLMRouter:
         if not self.api_key:
             return "OPENROUTER_API_KEY не задан. Добавьте ключ в .env."
 
-        messages: list[dict[str, str]] = [
-            {
-                "role": "system",
-                "content": (
-                    "You are Nano Bot V-2.0, a local system assistant. "
-                    "Use context to answer coherently and concisely."
-                ),
-            }
-        ]
-        for item in context:
-            role = item.get("role")
-            content = item.get("content")
-            if isinstance(role, str) and isinstance(content, str):
-                messages.append({"role": role, "content": content})
-
-        messages.append({"role": "user", "content": command})
+        messages = self._build_messages(command=command, context=context)
 
         try:
             completion = await self.client.chat.completions.create(
@@ -65,6 +57,26 @@ class LLMRouter:
         except Exception:  # noqa: BLE001
             logger.exception("Unexpected error while calling OpenRouter")
             return "Неожиданная ошибка при обращении к LLM. Попробуйте позже."
+
+    def _build_messages(self, command: str, context: list[dict]) -> list[dict[str, str]]:
+        """Build bounded message list for OpenRouter call."""
+        messages: list[dict[str, str]] = [
+            {
+                "role": "system",
+                "content": (
+                    "You are Nano Bot V-2.0, a local system assistant. "
+                    "Use context to answer coherently and concisely."
+                ),
+            }
+        ]
+        for item in context[-self.max_context_messages :]:
+            role = item.get("role")
+            content = item.get("content")
+            if isinstance(role, str) and isinstance(content, str):
+                messages.append({"role": role, "content": content})
+
+        messages.append({"role": "user", "content": command})
+        return messages
 
     @staticmethod
     def _normalize_text_content(content: object) -> str:
