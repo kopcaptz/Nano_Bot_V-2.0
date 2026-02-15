@@ -92,6 +92,9 @@ class CommandHandler:
         except PermissionError as exc:
             logger.warning("Permission denied for command chat_id=%s: %s", chat_id, exc)
             reply_text = f"⛔ {exc}"
+        except FileNotFoundError as exc:
+            logger.warning("Missing file for command chat_id=%s: %s", chat_id, exc)
+            reply_text = f"📁 {exc}"
         except RuntimeError as exc:
             logger.warning("Runtime adapter error for chat_id=%s: %s", chat_id, exc)
             reply_text = f"⚠️ {exc}"

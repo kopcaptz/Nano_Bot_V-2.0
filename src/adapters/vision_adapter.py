@@ -45,6 +45,17 @@ class VisionAdapter(BaseAdapter):
         if not self._running:
             raise RuntimeError("Vision adapter is not running.")
 
+    def _resolve_workspace_path(self, path: str) -> Path:
+        """Resolve path within workspace boundaries."""
+        candidate = Path(path).expanduser()
+        if not candidate.is_absolute():
+            candidate = self.workspace / candidate
+        resolved = candidate.resolve()
+        workspace_resolved = self.workspace.resolve()
+        if resolved != workspace_resolved and workspace_resolved not in resolved.parents:
+            raise PermissionError("Path is outside agent workspace.")
+        return resolved
+
     def take_screenshot(self, filename: str) -> str:
         """Capture and save screenshot to AGENT_WORKSPACE/screenshots/."""
         self._ensure_running()
@@ -82,6 +93,8 @@ class VisionAdapter(BaseAdapter):
     def ocr_image(self, image_path: str) -> str:
         """OCR stub for future extension."""
         self._ensure_running()
-        _ = image_path
+        safe_path = self._resolve_workspace_path(image_path)
+        if not safe_path.exists() or not safe_path.is_file():
+            raise FileNotFoundError(f"Image not found: {safe_path}")
         return "OCR not implemented yet"
 
