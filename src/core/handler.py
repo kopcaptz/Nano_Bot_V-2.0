@@ -229,6 +229,11 @@ class CommandHandler:
             "🚌 bus subscribers(telegram.send.reply): "
             f"{self.event_bus.get_subscriber_count('telegram.send.reply')}"
         )
+        event_types = self.event_bus.list_event_types()
+        lines.append(
+            "🚌 bus event types: "
+            + (", ".join(event_types) if event_types else "(none)")
+        )
         return "\n".join(lines)
 
     @staticmethod
