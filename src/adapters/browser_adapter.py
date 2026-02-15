@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 class BrowserAdapter(BaseAdapter):
     """Adapter for basic browser automation tasks."""
     ALLOWED_SCHEMES = {"http", "https", "data", "about"}
+    MAX_PAGE_TEXT_CHARS = 12000
 
     def __init__(self) -> None:
         self._playwright: Playwright | None = None
@@ -77,5 +78,11 @@ class BrowserAdapter(BaseAdapter):
         self._ensure_running()
         if url:
             await self.open_url(url)
-        return await self._page.inner_text("body")
+        text = await self._page.inner_text("body")
+        if len(text) > self.MAX_PAGE_TEXT_CHARS:
+            return (
+                f"{text[:self.MAX_PAGE_TEXT_CHARS]}\n"
+                f"... (truncated {len(text) - self.MAX_PAGE_TEXT_CHARS} chars)"
+            )
+        return text
 
