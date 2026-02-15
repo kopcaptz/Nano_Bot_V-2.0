@@ -44,6 +44,13 @@ class TelegramAdapter(BaseAdapter):
 
         self._app = Application.builder().token(self.token).build()
         self._app.add_handler(CommandHandler("start", self._handle_start))
+        self._app.add_handler(CommandHandler("help", self._handle_help_command))
+        self._app.add_handler(CommandHandler("status", self._handle_status_command))
+        self._app.add_handler(CommandHandler("clear_history", self._handle_clear_history_command))
+        self._app.add_handler(CommandHandler("system", self._handle_system_command))
+        self._app.add_handler(CommandHandler("browser_open", self._handle_browser_open_command))
+        self._app.add_handler(CommandHandler("browser_text", self._handle_browser_text_command))
+        self._app.add_handler(CommandHandler("screenshot", self._handle_screenshot_command))
         self._app.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self._handle_text_message)
         )
@@ -85,11 +92,63 @@ class TelegramAdapter(BaseAdapter):
         """Publish telegram.command.received event for incoming text."""
         if not update.message or not update.effective_chat or not update.effective_user:
             return
+        await self._publish_command_event(update=update, command_text=update.message.text or "")
+
+    async def _handle_help_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        await self._publish_command_event(update=update, command_text="/help")
+
+    async def _handle_status_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        await self._publish_command_event(update=update, command_text="/status")
+
+    async def _handle_clear_history_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        await self._publish_command_event(update=update, command_text="/clear_history")
+
+    async def _handle_system_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        command_text = self._compose_command("/system", context.args)
+        await self._publish_command_event(update=update, command_text=command_text)
+
+    async def _handle_browser_open_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        command_text = self._compose_command("/browser_open", context.args)
+        await self._publish_command_event(update=update, command_text=command_text)
+
+    async def _handle_browser_text_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        command_text = self._compose_command("/browser_text", context.args)
+        await self._publish_command_event(update=update, command_text=command_text)
+
+    async def _handle_screenshot_command(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        command_text = self._compose_command("/screenshot", context.args)
+        await self._publish_command_event(update=update, command_text=command_text)
+
+    @staticmethod
+    def _compose_command(base: str, args: list[str] | None) -> str:
+        """Build normalized command string from command and args."""
+        if not args:
+            return base
+        return f"{base} {' '.join(arg for arg in args if arg)}".strip()
+
+    async def _publish_command_event(self, update: Update, command_text: str) -> None:
+        """Publish normalized command payload to event bus."""
+        if not update.message or not update.effective_chat or not update.effective_user:
+            return
 
         event_payload: dict[str, Any] = {
             "chat_id": update.effective_chat.id,
             "user_id": update.effective_user.id,
-            "command": update.message.text or "",
+            "command": command_text,
         }
         await self.event_bus.publish("telegram.command.received", event_payload)
 
