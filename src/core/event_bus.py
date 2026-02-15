@@ -75,6 +75,14 @@ class EventBus:
             task = asyncio.create_task(result)
             task.add_done_callback(self._log_task_error)
 
+    def get_subscriber_count(self, event_type: str) -> int:
+        """Return number of subscribers for a specific event type."""
+        return len(self._subscribers.get(event_type, []))
+
+    def list_event_types(self) -> list[str]:
+        """Return sorted list of registered event types."""
+        return sorted(self._subscribers.keys())
+
     @staticmethod
     def _log_task_error(task: asyncio.Task) -> None:
         """Log callback exception from detached event tasks."""

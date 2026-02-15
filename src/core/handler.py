@@ -221,6 +221,14 @@ class CommandHandler:
 
         history_size = len(self.memory.get_history(chat_id))
         lines.append(f"🧠 history messages: {history_size}")
+        lines.append(
+            "🚌 bus subscribers(telegram.command.received): "
+            f"{self.event_bus.get_subscriber_count('telegram.command.received')}"
+        )
+        lines.append(
+            "🚌 bus subscribers(telegram.send.reply): "
+            f"{self.event_bus.get_subscriber_count('telegram.send.reply')}"
+        )
         return "\n".join(lines)
 
     @staticmethod
