@@ -47,8 +47,14 @@ class VisionAdapter(BaseAdapter):
         """Capture and save screenshot to AGENT_WORKSPACE/screenshots/."""
         self._ensure_running()
         self.screenshots_dir.mkdir(parents=True, exist_ok=True)
-        requested = Path(filename)
-        if requested.name != filename:
+        safe_name = filename.strip()
+        if not safe_name:
+            raise PermissionError("Filename cannot be empty.")
+        if "." not in safe_name:
+            safe_name = f"{safe_name}.png"
+
+        requested = Path(safe_name)
+        if requested.name != safe_name:
             raise PermissionError("Filename must not include directory traversal.")
         output_path = (self.screenshots_dir / requested.name).resolve()
         screenshots_root = self.screenshots_dir.resolve()
