@@ -153,6 +153,7 @@ async def main() -> None:
     except Exception:  # noqa: BLE001
         logger.exception("Fatal error in main runtime loop.")
     finally:
+        await command_handler.shutdown()
         logger.info("Stopping adapters...")
         await asyncio.gather(
             *(stop_adapter(name, adapter) for name, adapter in adapters.items()),

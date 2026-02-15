@@ -44,10 +44,21 @@ class CommandHandler:
         self.llm_router = llm_router
         self.memory = memory
         self.adapters = adapters
+        self._initialized = False
 
     async def initialize(self) -> None:
         """Register handler subscriptions on the event bus."""
+        if self._initialized:
+            return
         await self.event_bus.subscribe("telegram.command.received", self.handle_command)
+        self._initialized = True
+
+    async def shutdown(self) -> None:
+        """Unregister handler subscriptions from the event bus."""
+        if not self._initialized:
+            return
+        await self.event_bus.unsubscribe("telegram.command.received", self.handle_command)
+        self._initialized = False
 
     async def handle_command(self, event_data: dict[str, Any]) -> None:
         """Handle user command received from Telegram."""
