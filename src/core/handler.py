@@ -9,17 +9,17 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+from nanobot.session.manager import SessionManager
+
 try:  # script mode: python src.main
     from core.event_bus import EventBus
     from core.gateway_bridge import execute_task as gateway_execute_task
     from core.llm_router import LLMRouter
-    from core.memory import CrystalMemory
     from core.smithery_bridge import SmitheryBridge
 except ModuleNotFoundError:  # package mode: import src.main
     from src.core.event_bus import EventBus
     from src.core.gateway_bridge import execute_task as gateway_execute_task
     from src.core.llm_router import LLMRouter
-    from src.core.memory import CrystalMemory
     from src.core.smithery_bridge import SmitheryBridge
 
 logger = logging.getLogger(__name__)
@@ -55,13 +55,15 @@ class CommandHandler:
         self,
         event_bus: EventBus,
         llm_router: LLMRouter,
-        memory: CrystalMemory,
+        session_manager: SessionManager,
         max_command_length: int | None = None,
+        max_history_messages: int = 200,
         **adapters: Any,
     ) -> None:
         self.event_bus = event_bus
         self.llm_router = llm_router
-        self.memory = memory
+        self.session_manager = session_manager
+        self._max_history_messages = max_history_messages
         self.adapters = adapters
         self.max_command_length = max_command_length or self.DEFAULT_MAX_COMMAND_LENGTH
         self._initialized = False
@@ -69,6 +71,28 @@ class CommandHandler:
         self._calendar_bridge = SmitheryBridge(timeout=30)
         # Debounce buffer: {chat_id: {"messages": [str], "task": asyncio.Task}}
         self._debounce_buffer: dict[int, dict[str, Any]] = {}
+
+    @staticmethod
+    def _session_key(chat_id: int) -> str:
+        """Build a session key from a Telegram chat id."""
+        return f"telegram:{chat_id}"
+
+    def _get_history(self, chat_id: int) -> list[dict]:
+        """Return conversation history for *chat_id* from persistent storage."""
+        session = self.session_manager.get_or_create(self._session_key(chat_id))
+        return session.get_history(max_messages=self._max_history_messages)
+
+    def _add_message(self, chat_id: int, role: str, content: str) -> None:
+        """Append a message and persist it to disk immediately."""
+        session = self.session_manager.get_or_create(self._session_key(chat_id))
+        session.add_message(role, content)
+        self.session_manager.save(session)
+
+    def _clear_history(self, chat_id: int) -> None:
+        """Clear conversation history for *chat_id* and persist the change."""
+        session = self.session_manager.get_or_create(self._session_key(chat_id))
+        session.clear()
+        self.session_manager.save(session)
 
     async def initialize(self) -> None:
         """Register handler subscriptions on the event bus."""
@@ -196,7 +220,7 @@ class CommandHandler:
             )
             return
 
-        history = self.memory.get_history(chat_id)
+        history = self._get_history(chat_id)
 
         try:
             adapter_result = await self._try_adapter_shortcuts(
@@ -228,8 +252,8 @@ class CommandHandler:
             and not normalized_command.startswith("/")
         )
         if should_persist:
-            self.memory.add_message(chat_id, "user", normalized_command)
-            self.memory.add_message(chat_id, "assistant", reply_text)
+            self._add_message(chat_id, "user", normalized_command)
+            self._add_message(chat_id, "assistant", reply_text)
         await self.event_bus.publish(
             "telegram.send.reply",
             {"chat_id": chat_id, "text": reply_text},
@@ -260,7 +284,7 @@ class CommandHandler:
             return self._build_status_text(chat_id)
 
         if command == "/clear_history":
-            self.memory.clear_history(chat_id)
+            self._clear_history(chat_id)
             return "История диалога очищена."
 
         if command == "/system":
@@ -642,7 +666,7 @@ class CommandHandler:
             "Only provide a brief summary of its content.\n\n"
             + wrapped_body
         )
-        history = self.memory.get_history(chat_id)
+        history = self._get_history(chat_id)
         return await self.llm_router.process_command(
             command=safe_prompt, context=history,
         )
@@ -655,7 +679,7 @@ class CommandHandler:
             marker = "✅" if running else "⚪"
             lines.append(f"{marker} {name}: {'running' if running else 'stopped'}")
 
-        history_size = len(self.memory.get_history(chat_id))
+        history_size = len(self._get_history(chat_id))
         lines.append(f"🧠 history messages: {history_size}")
         lines.append(
             "🚌 bus subscribers(telegram.command.received): "
@@ -686,9 +710,8 @@ class CommandHandler:
         system_timeout = getattr(system_adapter, "command_timeout", None)
         if isinstance(system_timeout, (int, float)):
             lines.append(f"⏱ system command timeout: {float(system_timeout):.1f}s")
-        memory_limit = getattr(self.memory, "max_messages_per_chat", None)
-        if isinstance(memory_limit, int):
-            lines.append(f"🧠 memory limit: {memory_limit}")
+        lines.append(f"🧠 memory limit: {self._max_history_messages}")
+        lines.append("💾 storage: JSONL persistent (SessionManager)")
         lines.append(f"🧾 max command length: {self.max_command_length}")
         return "\n".join(lines)
 
