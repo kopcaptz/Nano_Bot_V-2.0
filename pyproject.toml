@@ -40,6 +40,8 @@ dependencies = [
     "qq-botpy>=1.0.0",
     "python-socks[asyncio]>=2.4.0",
     "prompt-toolkit>=3.0.0",
+    "hnswlib>=0.8.0",
+    "sentence-transformers>=2.0.0",
 ]
 
 [project.optional-dependencies]
