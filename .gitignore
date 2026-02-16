@@ -2,6 +2,9 @@
 __pycache__/
 *.pyc
 *.log
+credentials.json
+token.json
+backups/
 # Игнорировать все в рабочей директории, кроме .gitkeep
 workspace/*
 !workspace/.gitkeep

@@ -26,6 +26,7 @@ class Config:
     adapter_start_timeout_seconds: float
     adapter_stop_timeout_seconds: float
     agent_workspace: Path
+    gmail_credentials_path: Path
     log_level: str
 
 
@@ -148,6 +149,11 @@ def load_config() -> Config:
         name="ADAPTER_STOP_TIMEOUT_SECONDS",
     )
 
+    gmail_credentials_raw = os.getenv("GMAIL_CREDENTIALS_PATH", "credentials.json").strip()
+    gmail_credentials_path = Path(gmail_credentials_raw)
+    if not gmail_credentials_path.is_absolute():
+        gmail_credentials_path = Path.cwd() / gmail_credentials_path
+
     return Config(
         telegram_bot_token=telegram_token,
         openrouter_api_key=openrouter_api_key,
@@ -160,6 +166,7 @@ def load_config() -> Config:
         adapter_start_timeout_seconds=adapter_start_timeout_seconds,
         adapter_stop_timeout_seconds=adapter_stop_timeout_seconds,
         agent_workspace=workspace_path,
+        gmail_credentials_path=gmail_credentials_path,
         log_level=log_level,
     )
 

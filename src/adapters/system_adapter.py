@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 class SystemAdapter(BaseAdapter):
     """Adapter for interacting with local OS in a restricted way."""
 
-    SAFE_COMMANDS = {"dir", "tasklist", "ping", "echo"}
+    SAFE_COMMANDS = {"dir", "tasklist", "ping", "echo", "mkdir"}
     SHELL_META_PATTERN = re.compile(r"(?:[;&|<>`]|[$][(]|\r|\n)")
     POSIX_ALIASES: dict[str, list[str]] = {
         "dir": ["ls"],

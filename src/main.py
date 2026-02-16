@@ -8,6 +8,7 @@ import signal
 
 try:  # script mode: python src/main.py
     from adapters.browser_adapter import BrowserAdapter
+    from adapters.gmail_adapter import GmailAdapter
     from adapters.system_adapter import SystemAdapter
     from adapters.telegram_adapter import TelegramAdapter
     from adapters.vision_adapter import VisionAdapter
@@ -18,6 +19,7 @@ try:  # script mode: python src/main.py
     from core.memory import CrystalMemory
 except ModuleNotFoundError:  # package mode: import src.main
     from src.adapters.browser_adapter import BrowserAdapter
+    from src.adapters.gmail_adapter import GmailAdapter
     from src.adapters.system_adapter import SystemAdapter
     from src.adapters.telegram_adapter import TelegramAdapter
     from src.adapters.vision_adapter import VisionAdapter
@@ -50,12 +52,14 @@ async def main() -> None:
     )
     browser_adapter = BrowserAdapter()
     vision_adapter = VisionAdapter(workspace=config.agent_workspace)
+    gmail_adapter = GmailAdapter(credentials_path=config.gmail_credentials_path)
 
     adapters = {
         "telegram": telegram_adapter,
         "system": system_adapter,
         "browser": browser_adapter,
         "vision": vision_adapter,
+        "gmail": gmail_adapter,
     }
 
     command_handler = CommandHandler(
@@ -67,6 +71,7 @@ async def main() -> None:
         system=system_adapter,
         browser=browser_adapter,
         vision=vision_adapter,
+        gmail=gmail_adapter,
     )
     await command_handler.initialize()
 
