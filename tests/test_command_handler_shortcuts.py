@@ -50,12 +50,16 @@ class CommandHandlerShortcutsTests(unittest.IsolatedAsyncioTestCase):
     async def _capture_reply(self, payload: dict[str, Any]) -> None:
         self.replies.append(dict(payload))
 
-    async def _publish_command(self, chat_id: int, command: str) -> dict[str, Any]:
+    async def _publish_command(self, chat_id: int, command: str, wait_for_debounce: bool = False) -> dict[str, Any]:
         await self.event_bus.publish(
             "telegram.command.received",
             {"chat_id": chat_id, "command": command},
         )
-        await asyncio.sleep(0.05)
+        # If command is not a slash command and we expect debounce, wait longer
+        if wait_for_debounce:
+            await asyncio.sleep(5.2)  # Wait for debounce delay + buffer
+        else:
+            await asyncio.sleep(0.05)
         self.assertTrue(self.replies, msg="Expected at least one reply event")
         return self.replies[-1]
 
@@ -82,7 +86,7 @@ class CommandHandlerShortcutsTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_regular_text_goes_to_llm_and_persists_turns(self) -> None:
         """Non-slash text must call LLM and persist user+assistant messages."""
-        reply = await self._publish_command(chat_id=7003, command="hello bot")
+        reply = await self._publish_command(chat_id=7003, command="hello bot", wait_for_debounce=True)
         self.assertEqual(reply["text"], "llm-result")
         self.assertEqual(len(self.llm.calls), 1)
         self.assertEqual(self.llm.calls[0][0], "hello bot")
@@ -95,6 +99,68 @@ class CommandHandlerShortcutsTests(unittest.IsolatedAsyncioTestCase):
                 {"role": "assistant", "content": "llm-result"},
             ],
         )
+
+    async def test_debounce_accumulates_multiple_messages(self) -> None:
+        """Multiple rapid messages should be accumulated and sent as one."""
+        chat_id = 7005
+        
+        # Send three messages in rapid succession
+        await self.event_bus.publish(
+            "telegram.command.received",
+            {"chat_id": chat_id, "command": "Hello"},
+        )
+        await asyncio.sleep(0.1)
+        
+        await self.event_bus.publish(
+            "telegram.command.received",
+            {"chat_id": chat_id, "command": "this is"},
+        )
+        await asyncio.sleep(0.1)
+        
+        await self.event_bus.publish(
+            "telegram.command.received",
+            {"chat_id": chat_id, "command": "a test"},
+        )
+        
+        # Wait for debounce delay
+        await asyncio.sleep(5.2)
+        
+        # Should have received exactly one reply
+        self.assertEqual(len(self.replies), 1)
+        self.assertEqual(self.replies[0]["text"], "llm-result")
+        
+        # LLM should have been called once with concatenated message
+        self.assertEqual(len(self.llm.calls), 1)
+        self.assertEqual(self.llm.calls[0][0], "Hello this is a test")
+        
+        # History should show the combined message
+        history = self.memory.get_history(chat_id)
+        self.assertEqual(
+            history,
+            [
+                {"role": "user", "content": "Hello this is a test"},
+                {"role": "assistant", "content": "llm-result"},
+            ],
+        )
+
+    async def test_slash_command_bypasses_debounce(self) -> None:
+        """Slash commands should be processed immediately without debounce."""
+        chat_id = 7006
+        
+        # Send a slash command
+        await self.event_bus.publish(
+            "telegram.command.received",
+            {"chat_id": chat_id, "command": "/ping"},
+        )
+        
+        # Should get immediate response without waiting for debounce
+        await asyncio.sleep(0.1)
+        
+        self.assertEqual(len(self.replies), 1)
+        self.assertEqual(self.replies[0]["text"], "pong")
+        
+        # Should not call LLM
+        self.assertEqual(len(self.llm.calls), 0)
 
 
 if __name__ == "__main__":
