@@ -1,141 +1,55 @@
-# Nanobot Persistent Memory — Full Architecture Analysis
+# Nanobot — Архитектура персистентной памяти
 
-## 1. Directory Structure
+## Файлы
 
 ```
 nanobot/memory/
-├── __init__.py        # Public API (re-exports from db.py + crystallize.py)
-├── db.py              # SQLite storage — facts, journal, conversations, reflections, token_usage
-├── vector.py          # ChromaDB vector store — semantic search via embeddings
-└── crystallize.py     # LLM-based fact extraction from dialogues
+  __init__.py      — публичный API
+  db.py            — SQLite: facts, journal, conversations, reflections, token_usage
+  vector.py        — ChromaDB: семантический поиск
+  crystallize.py   — извлечение фактов из диалогов через LLM
 
-nanobot/agent/
-├── memory.py          # MemoryStore — file-based memory (MEMORY.md + daily notes)
-├── context.py         # ContextBuilder — assembles system prompt with memory enrichment
-└── tools/
-    └── memory.py      # MemorySearchTool — agent tool for semantic/filtered search
-
-nanobot/session/
-└── manager.py         # SessionManager — JSONL-based conversation persistence
-
-src/core/
-└── memory.py          # CrystalMemory — in-memory dialogue buffer (MVP/legacy)
-
-Storage paths (all under ~/.nanobot/):
-├── memory.db          # SQLite database
-├── chroma/            # ChromaDB persistent directory
-├── sessions/          # JSONL session files
-└── workspace/
-    └── memory/
-        ├── MEMORY.md      # Long-term notes (agent-written)
-        └── YYYY-MM-DD.md  # Daily notes
+nanobot/agent/memory.py        — файловая память (MEMORY.md + YYYY-MM-DD.md)
+nanobot/agent/context.py       — сборка промпта + авто-обогащение из векторов
+nanobot/agent/tools/memory.py  — инструмент memory_search для агента
+nanobot/session/manager.py     — JSONL-сессии
+src/core/memory.py             — in-memory буфер (legacy)
 ```
 
-## 2. Storage Layers Overview
+## Слои хранения
 
-| Layer | Engine | Purpose | Path |
-|-------|--------|---------|------|
-| Structured facts | SQLite | Category/key/value facts, journal, conversations | `~/.nanobot/memory.db` |
-| Vector index | ChromaDB (PersistentClient) | Semantic similarity search | `~/.nanobot/chroma/` |
-| File-based memory | Markdown files | Agent-accessible notes | `~/.nanobot/workspace/memory/` |
-| Session history | JSONL files | Per-chat conversation persistence | `~/.nanobot/sessions/` |
-| In-memory buffer | Python dict | Fast session context (MVP) | RAM only |
+| Слой | Движок | Путь |
+|------|--------|------|
+| Структурированные факты | SQLite | `~/.nanobot/memory.db` |
+| Векторный индекс | ChromaDB PersistentClient | `~/.nanobot/chroma/` |
+| Файловая память | Markdown | `~/.nanobot/workspace/memory/` |
+| История сессий | JSONL | `~/.nanobot/sessions/` |
+| Оперативный буфер | Python dict | RAM |
 
-## 3. Libraries Used
+## Векторы
 
-- **SQLite3** (stdlib) — structured data storage
-- **ChromaDB** (`chromadb.PersistentClient`) — vector database
-- **SentenceTransformers** via `chromadb.utils.embedding_functions.SentenceTransformerEmbeddingFunction` — embeddings
-- **Model**: `all-MiniLM-L6-v2` (384-dim, cosine similarity)
-- **HNSW** index with cosine distance (`hnsw:space = cosine`)
-- **Loguru** — logging
-- **Pydantic / Pydantic-Settings** — config schema
+- Модель: `all-MiniLM-L6-v2` (384 dim, float32)
+- Метрика: cosine (`hnsw:space: cosine`)
+- Коллекция: `nanobot_memory`
+- ID записи: `fact::{category}::{key}`
+- Metadata: type, category, key, value, domain, sub_category, updated_at
+- Fallback: если SentenceTransformers нет — встроенный embedder ChromaDB
 
-## 4. Vector Format
+## Зависимости
 
-- **Embedding model**: `all-MiniLM-L6-v2` (384 dimensions, float32)
-- **Distance metric**: Cosine similarity (`hnsw:space: cosine`)
-- **Collection name**: `nanobot_memory`
-- **Storage**: ChromaDB PersistentClient at `~/.nanobot/chroma/`
-- **Document format**: Each vector entry contains:
-  - `id` — stable string like `fact::category::key`
-  - `document` — text representation of the fact
-  - `metadata` — dict with type, category, key, value, domain, sub_category, updated_at
-- **Fallback**: If SentenceTransformers unavailable, ChromaDB uses its built-in default embedder
+В pyproject.toml: `pydantic`, `pydantic-settings`, `loguru`, `litellm`
+Динамический импорт: `chromadb`, `sentence-transformers` (опционально)
 
-## 5. Dependencies for Memory
+## Потоки данных
 
-From `pyproject.toml` (main deps relevant to memory):
+**Сохранение факта:**
+message -> `crystallize_memories()` -> LLM -> JSON -> `add_fact()` -> SQLite UPSERT + ChromaDB upsert
 
-```
-pydantic>=2.0.0
-pydantic-settings>=2.0.0
-loguru>=0.7.0
-litellm>=1.0.0        # Used by crystallize (LLM calls)
-```
+**Загрузка факта:**
+message -> `ContextBuilder.build_messages()` -> `semantic_search()` -> ChromaDB query -> фильтр distance < 0.7 -> system-сообщение с релевантными фактами
 
-Not in pyproject.toml but required at runtime:
+**Ручной поиск (агент):**
+`memory_search` tool -> с domain/category -> `get_facts_filtered()` (SQLite) | без фильтра -> `semantic_search()` (ChromaDB)
 
-```
-chromadb              # Vector DB (imported dynamically)
-sentence-transformers # For all-MiniLM-L6-v2 (optional, graceful fallback)
-```
-
-## 6. Save/Load Flow
-
-### 6.1 Fact Save Flow
-
-```
-User message
-    │
-    ▼
-crystallize_memories() ──► LLM extracts JSON facts
-    │
-    ▼
-add_fact(category, key, value, domain, sub_category)
-    │
-    ├──► SQLite INSERT/UPSERT into `facts` table
-    │
-    └──► ChromaDB upsert (text + metadata)
-         id = "fact::{category}::{key}"
-         text = "Domain: ...\nКатегория: ...\nКлюч: ...\nЗначение: ..."
-```
-
-### 6.2 Fact Retrieval Flow
-
-```
-Agent receives message
-    │
-    ▼
-ContextBuilder.build_messages()
-    │
-    ├──► semantic_search(current_message, limit=5)
-    │       │
-    │       ▼
-    │    ChromaDB collection.query(query_texts=[...])
-    │       │
-    │       ▼
-    │    Filter by distance < 0.7
-    │       │
-    │       ▼
-    │    Inject as system message: "Relevant facts from your memory: ..."
-    │
-    └──► Agent can also call memory_search tool manually
-            │
-            ├── With domain/category filter → get_facts_filtered() (SQLite)
-            └── Without filter → semantic_search() (ChromaDB)
-```
-
-### 6.3 Session Persistence
-
-```
-Message arrives
-    │
-    ├──► SessionManager.get_or_create(key)
-    │       loads from ~/.nanobot/sessions/{key}.jsonl
-    │
-    ├──► session.add_message(role, content)
-    │
-    └──► SessionManager.save(session)
-            writes metadata line + message lines as JSONL
-```
+**Сессия:**
+`SessionManager.get_or_create()` -> load JSONL -> `add_message()` -> `save()` -> write JSONL
