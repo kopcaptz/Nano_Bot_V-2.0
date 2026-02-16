@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Any
@@ -21,6 +22,7 @@ logger = logging.getLogger(__name__)
 class CommandHandler:
     """Coordinates incoming commands, LLM processing, and adapter actions."""
     DEFAULT_MAX_COMMAND_LENGTH = 8000
+    DEBOUNCE_DELAY_SECONDS = 5.0
     NON_PERSISTENT_COMMANDS = {
         "/ping", "/help", "/status", "/clear_history",
         "/check_mail", "/read_mail",
@@ -55,6 +57,8 @@ class CommandHandler:
         self.max_command_length = max_command_length or self.DEFAULT_MAX_COMMAND_LENGTH
         self._initialized = False
         self._mail_cache: dict[int, list[dict]] = {}
+        # Debounce buffer: {chat_id: {"messages": [str], "task": asyncio.Task}}
+        self._debounce_buffer: dict[int, dict[str, Any]] = {}
 
     async def initialize(self) -> None:
         """Register handler subscriptions on the event bus."""
@@ -67,11 +71,20 @@ class CommandHandler:
         """Unregister handler subscriptions from the event bus."""
         if not self._initialized:
             return
+        
+        # Cancel all pending debounce tasks
+        for chat_id, buffer_entry in self._debounce_buffer.items():
+            task = buffer_entry.get("task")
+            if task and not task.done():
+                task.cancel()
+                logger.debug("Cancelled debounce task for chat_id=%s during shutdown", chat_id)
+        self._debounce_buffer.clear()
+        
         await self.event_bus.unsubscribe("telegram.command.received", self.handle_command)
         self._initialized = False
 
     async def handle_command(self, event_data: dict[str, Any]) -> None:
-        """Handle user command received from Telegram."""
+        """Handle user command received from Telegram with debounce."""
         raw_chat_id = event_data.get("chat_id")
         try:
             chat_id = int(raw_chat_id)
@@ -81,7 +94,7 @@ class CommandHandler:
 
         command = str(event_data.get("command", "")).strip()
         command_preview = command[:200] + ("..." if len(command) > 200 else "")
-        logger.info("Handling command for chat_id=%s: %s", chat_id, command_preview)
+        logger.info("Received message for chat_id=%s: %s", chat_id, command_preview)
         normalized_command = self._normalize_command(command)
 
         if not normalized_command:
@@ -90,6 +103,76 @@ class CommandHandler:
                 {"chat_id": chat_id, "text": "Пустая команда. Отправьте текстовый запрос."},
             )
             return
+
+        # For slash commands, process immediately without debounce
+        if normalized_command.startswith("/"):
+            await self._process_command_immediate(chat_id, normalized_command)
+            return
+
+        # Apply debounce for regular text messages
+        await self._handle_with_debounce(chat_id, normalized_command)
+
+    async def _handle_with_debounce(self, chat_id: int, command: str) -> None:
+        """Buffer incoming messages and process after debounce delay."""
+        # Cancel existing debounce task if any
+        if chat_id in self._debounce_buffer:
+            existing_task = self._debounce_buffer[chat_id].get("task")
+            if existing_task and not existing_task.done():
+                existing_task.cancel()
+                logger.debug("Cancelled previous debounce task for chat_id=%s", chat_id)
+
+        # Initialize or append to message buffer
+        if chat_id not in self._debounce_buffer:
+            self._debounce_buffer[chat_id] = {"messages": [], "task": None}
+        
+        self._debounce_buffer[chat_id]["messages"].append(command)
+        logger.debug(
+            "Buffered message for chat_id=%s (total: %d)",
+            chat_id,
+            len(self._debounce_buffer[chat_id]["messages"]),
+        )
+
+        # Create new debounce task
+        task = asyncio.create_task(self._debounce_task(chat_id))
+        self._debounce_buffer[chat_id]["task"] = task
+
+    async def _debounce_task(self, chat_id: int) -> None:
+        """Wait for debounce delay, then process accumulated messages."""
+        try:
+            await asyncio.sleep(self.DEBOUNCE_DELAY_SECONDS)
+            
+            # Retrieve and clear buffered messages
+            buffer_entry = self._debounce_buffer.get(chat_id)
+            if not buffer_entry:
+                return
+            
+            messages = buffer_entry["messages"]
+            if not messages:
+                return
+            
+            # Concatenate all buffered messages
+            combined_command = " ".join(messages)
+            logger.info(
+                "Processing %d buffered message(s) for chat_id=%s (total length: %d)",
+                len(messages),
+                chat_id,
+                len(combined_command),
+            )
+            
+            # Clear buffer before processing
+            self._debounce_buffer.pop(chat_id, None)
+            
+            # Process the combined command
+            await self._process_command_immediate(chat_id, combined_command)
+            
+        except asyncio.CancelledError:
+            logger.debug("Debounce task cancelled for chat_id=%s", chat_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("Debounce task failed for chat_id=%s", chat_id)
+            self._debounce_buffer.pop(chat_id, None)
+
+    async def _process_command_immediate(self, chat_id: int, normalized_command: str) -> None:
+        """Process a command immediately without debounce."""
         if len(normalized_command) > self.max_command_length:
             await self.event_bus.publish(
                 "telegram.send.reply",
