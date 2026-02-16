@@ -98,6 +98,17 @@ smithery tool call googlecalendar list-events '{"timeMin": "2026-02-16T00:00:00Z
 
 ---
 
+## Приложение B: SmitheryBridge (Этап 2)
+
+Модуль `src/core/smithery_bridge.py` — мост для вызова MCP через Smithery CLI.
+
+- **Строк кода:** 206
+- **Публичные методы:** `call_tool(server, tool_name, params)`, `list_tools(server=None)`
+- **Timeout:** 30 секунд (по умолчанию)
+- **Тесты:** `tests/test_smithery_bridge.py` — 4 теста проходят
+
+---
+
 ## Приложение: Структура CLI
 
 ```
