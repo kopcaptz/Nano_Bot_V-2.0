@@ -9,10 +9,12 @@ from typing import Any
 
 try:  # script mode: python src/main.py
     from core.event_bus import EventBus
+    from core.gateway_bridge import execute_task as gateway_execute_task
     from core.llm_router import LLMRouter
     from core.memory import CrystalMemory
 except ModuleNotFoundError:  # package mode: import src.main
     from src.core.event_bus import EventBus
+    from src.core.gateway_bridge import execute_task as gateway_execute_task
     from src.core.llm_router import LLMRouter
     from src.core.memory import CrystalMemory
 
@@ -327,6 +329,7 @@ class CommandHandler:
 
         return None
 
+    _RE_AGENT_MODE = re.compile(r"\[ACTION:AGENT_MODE\]", re.IGNORECASE)
     _RE_CHECK_MAIL = re.compile(r"\[ACTION:CHECK_MAIL\]", re.IGNORECASE)
     _RE_READ_MAIL = re.compile(r"\[ACTION:READ_MAIL\s+(\d+)\]", re.IGNORECASE)
 
@@ -342,6 +345,30 @@ class CommandHandler:
         response = await self.llm_router.process_command(
             command=command, context=context,
         )
+
+        agent_match = self._RE_AGENT_MODE.search(response)
+        if agent_match:
+            system = self.adapters.get("system")
+            workspace = getattr(system, "workspace", None) if system else None
+            try:
+                gateway_result = await gateway_execute_task(
+                    task=command,
+                    chat_id=chat_id,
+                    workspace=workspace,
+                )
+            except Exception:
+                logger.exception("Agent mode execution failed")
+                return "Агентный режим временно недоступен. Попробуйте позже."
+            return await self.llm_router.process_command(
+                command=(
+                    "The user requested a task that was executed by the agent. "
+                    "Here is the agent's result. Summarize it concisely in the user's "
+                    "language and present it as your response. Do not repeat raw output "
+                    "verbatim; be friendly and concise.\n\n"
+                    f"[AGENT_RESULT]\n{gateway_result}\n[/AGENT_RESULT]"
+                ),
+                context=context,
+            )
 
         check_match = self._RE_CHECK_MAIL.search(response)
         if check_match:
