@@ -5,4 +5,5 @@ playwright~=1.41
 mss~=9.0
 Pillow~=10.2
 pyperclip~=1.8
+# Hybrid agent mode (gateway bridge): run "pip install -e ." to install nanobot
 
