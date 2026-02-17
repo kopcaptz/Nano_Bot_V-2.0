@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from nanobot.agent.memory import MemoryStore
+from nanobot.agent.skill_manager import SkillManager
 from nanobot.agent.skills import SkillsLoader
 from nanobot.memory.db import semantic_search
 
@@ -21,17 +22,23 @@ class ContextBuilder:
     
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
     
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, skill_manager: SkillManager | None = None):
         self.workspace = workspace
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
+        self.skill_manager = skill_manager
     
-    def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
+    def build_system_prompt(
+        self,
+        skill_names: list[str] | None = None,
+        query: str | None = None,
+    ) -> str:
         """
         Build the system prompt from bootstrap files, memory, and skills.
         
         Args:
             skill_names: Optional list of skills to include.
+            query: Optional user query for semantic skill search via SkillManager.
         
         Returns:
             Complete system prompt.
@@ -52,6 +59,60 @@ class ContextBuilder:
             parts.append(f"# Memory\n\n{memory}")
         
         # Skills - progressive loading
+        if self.skill_manager:
+            self._append_managed_skills(parts, query)
+        else:
+            self._append_loader_skills(parts)
+        
+        return "\n\n---\n\n".join(parts)
+    
+    def _append_managed_skills(
+        self, parts: list[str], query: str | None
+    ) -> None:
+        """Append skills from SkillManager (SQLite + vector search)."""
+        # 1. Always-loaded skills from filesystem (still handled by SkillsLoader)
+        always_skills = self.skills.get_always_skills()
+        if always_skills:
+            always_content = self.skills.load_skills_for_context(always_skills)
+            if always_content:
+                parts.append(f"# Active Skills\n\n{always_content}")
+        
+        # 2. Relevant skills from SkillManager
+        try:
+            if query:
+                results = self.skill_manager.search_skills(query, limit=5)
+            else:
+                results = self.skill_manager.list_skills()[:5]
+            
+            if results:
+                lines = ["<skills>"]
+                for s in results:
+                    name = s.get("skill_name", s.get("name", "unknown"))
+                    desc = s.get("description", "")
+                    s_type = s.get("skill_type", "basic")
+                    score = s.get("score")
+                    
+                    lines.append(f'  <skill type="{s_type}">')
+                    lines.append(f"    <name>{name}</name>")
+                    if desc:
+                        lines.append(f"    <description>{desc}</description>")
+                    if score is not None:
+                        lines.append(f"    <relevance>{score:.2f}</relevance>")
+                    lines.append("  </skill>")
+                lines.append("</skills>")
+                
+                parts.append(
+                    "# Skills\n\n"
+                    "The following skills were found by semantic search. "
+                    "Use the skill name with your tools to apply them.\n\n"
+                    + "\n".join(lines)
+                )
+        except Exception:
+            # SkillManager failed at runtime — fall back to SkillsLoader
+            self._append_loader_skills(parts)
+    
+    def _append_loader_skills(self, parts: list[str]) -> None:
+        """Append skills from SkillsLoader (filesystem fallback)."""
         # 1. Always-loaded skills: include full content
         always_skills = self.skills.get_always_skills()
         if always_skills:
@@ -62,14 +123,14 @@ class ContextBuilder:
         # 2. Available skills: only show summary (agent uses read_file to load)
         skills_summary = self.skills.build_skills_summary()
         if skills_summary:
-            parts.append(f"""# Skills
-
-The following skills extend your capabilities. To use a skill, read its SKILL.md file using the read_file tool.
-Skills with available="false" need dependencies installed first - you can try installing them with apt/brew.
-
-{skills_summary}""")
-        
-        return "\n\n---\n\n".join(parts)
+            parts.append(
+                "# Skills\n\n"
+                "The following skills extend your capabilities. "
+                "To use a skill, read its SKILL.md file using the read_file tool.\n"
+                'Skills with available="false" need dependencies installed first '
+                "- you can try installing them with apt/brew.\n\n"
+                + skills_summary
+            )
     
     def _get_identity(self) -> str:
         """Get the core identity section."""
@@ -159,7 +220,7 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
         messages = []
 
         # System prompt
-        system_prompt = self.build_system_prompt(skill_names)
+        system_prompt = self.build_system_prompt(skill_names, query=current_message)
         if channel and chat_id:
             system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
         messages.append({"role": "system", "content": system_prompt})

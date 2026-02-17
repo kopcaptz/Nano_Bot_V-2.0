@@ -24,6 +24,7 @@ from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.tools.memory import MemorySearchTool
+from nanobot.agent.skill_manager import SkillManager
 from nanobot.agent.subagent import SubagentManager
 from nanobot.memory.db import add_reflection
 from nanobot.session.manager import Session, SessionManager
@@ -53,6 +54,7 @@ class AgentLoop:
         cron_service: "CronService | None" = None,
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
+        use_skill_manager: bool = True,
     ):
         from nanobot.config.schema import ExecToolConfig
         from nanobot.cron.service import CronService
@@ -66,7 +68,17 @@ class AgentLoop:
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
         
-        self.context = ContextBuilder(workspace)
+        # Skill manager (SQLite + vector search)
+        self.skill_manager: SkillManager | None = None
+        if use_skill_manager:
+            try:
+                sm_dir = workspace / ".nanobot" / "skills"
+                self.skill_manager = SkillManager(sm_dir, auto_sync=True)
+                logger.info(f"SkillManager enabled at {sm_dir}")
+            except Exception as e:
+                logger.warning(f"SkillManager init failed, falling back to SkillsLoader: {e}")
+        
+        self.context = ContextBuilder(workspace, skill_manager=self.skill_manager)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         self.reflection = Reflection(provider=provider, model=self.model)
