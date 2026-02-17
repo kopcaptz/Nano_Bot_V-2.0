@@ -1,14 +1,21 @@
 """Context builder for assembling agent prompts."""
 
+from __future__ import annotations
+
 import base64
 import mimetypes
 import platform
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
+
+from loguru import logger
 
 from nanobot.agent.memory import MemoryStore
 from nanobot.agent.skills import SkillsLoader
 from nanobot.memory.db import semantic_search
+
+if TYPE_CHECKING:
+    from nanobot.agent.skill_manager import SkillManager
 
 
 class ContextBuilder:
@@ -17,26 +24,42 @@ class ContextBuilder:
     
     Assembles bootstrap files, memory, skills, and conversation history
     into a coherent prompt for the LLM.
+    
+    When a SkillManager is provided, build_system_prompt() uses semantic
+    search to find the most relevant skills for the current user query.
+    The legacy SkillsLoader is kept as a fallback for always-on skills
+    and the full skills summary.
     """
     
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
     
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, skill_manager: "SkillManager | None" = None):
         self.workspace = workspace
         self.memory = MemoryStore(workspace)
+        self.skill_manager = skill_manager
         self.skills = SkillsLoader(workspace)
     
-    def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
+    def build_system_prompt(
+        self,
+        skill_names: list[str] | None = None,
+        user_query: str | None = None,
+    ) -> str:
         """
         Build the system prompt from bootstrap files, memory, and skills.
         
+        When a SkillManager is configured and *user_query* is provided,
+        performs semantic search to include the most relevant skills
+        directly in the prompt.  Always-on skills and the full skill
+        catalogue summary are still loaded via the legacy SkillsLoader.
+        
         Args:
-            skill_names: Optional list of skills to include.
+            skill_names: Optional list of skills to include explicitly.
+            user_query: Current user message — used for semantic skill search.
         
         Returns:
             Complete system prompt.
         """
-        parts = []
+        parts: list[str] = []
         
         # Core identity
         parts.append(self._get_identity())
@@ -51,15 +74,50 @@ class ContextBuilder:
         if memory:
             parts.append(f"# Memory\n\n{memory}")
         
-        # Skills - progressive loading
-        # 1. Always-loaded skills: include full content
+        # ── Skills ─────────────────────────────────────────────
+        included_skill_names: set[str] = set()
+        
+        # 1. Always-loaded skills: include full content (via legacy loader)
         always_skills = self.skills.get_always_skills()
         if always_skills:
             always_content = self.skills.load_skills_for_context(always_skills)
             if always_content:
                 parts.append(f"# Active Skills\n\n{always_content}")
+                included_skill_names.update(always_skills)
         
-        # 2. Available skills: only show summary (agent uses read_file to load)
+        # 2. Semantic search for relevant skills (via SkillManager)
+        if self.skill_manager and user_query:
+            try:
+                search_results = self.skill_manager.search_skills(
+                    query=user_query, limit=5,
+                )
+                relevant_parts: list[str] = []
+                for result in search_results:
+                    name = result["skill_name"]
+                    if name in included_skill_names:
+                        continue
+                    score = result.get("score", 0.0)
+                    if score < 0.3:
+                        continue
+                    skill_data = self.skill_manager.get_skill(name)
+                    if not skill_data:
+                        continue
+                    desc = skill_data.get("description", "")
+                    content = skill_data.get("content", "")
+                    relevant_parts.append(
+                        f"### {name} (relevance: {score:.2f})\n"
+                        f"{desc}\n\n{content}"
+                    )
+                    included_skill_names.add(name)
+                if relevant_parts:
+                    parts.append(
+                        "# Relevant Skills (semantic match)\n\n"
+                        + "\n\n---\n\n".join(relevant_parts)
+                    )
+            except Exception as exc:
+                logger.debug(f"SkillManager semantic search skipped: {exc}")
+        
+        # 3. Available skills catalogue (agent uses read_file to load on demand)
         skills_summary = self.skills.build_skills_summary()
         if skills_summary:
             parts.append(f"""# Skills
@@ -158,8 +216,11 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
         """
         messages = []
 
-        # System prompt
-        system_prompt = self.build_system_prompt(skill_names)
+        # System prompt (pass current_message for semantic skill search)
+        system_prompt = self.build_system_prompt(
+            skill_names=skill_names,
+            user_query=current_message,
+        )
         if channel and chat_id:
             system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
         messages.append({"role": "system", "content": system_prompt})
