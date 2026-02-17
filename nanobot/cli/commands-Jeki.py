@@ -502,6 +502,11 @@ def crystallize(
         "--messages-limit",
         help="How many recent conversation messages to analyze",
     ),
+    sessions_limit: int = typer.Option(
+        20,
+        "--sessions-limit",
+        help="How many recent sessions to load from JSONL",
+    ),
     model: str = typer.Option(
         "gpt-4o-mini",
         "--model",
@@ -518,24 +523,29 @@ def crystallize(
         help="Cron expression for daily crystallization job",
     ),
 ):
-    """Extract structured facts from recent conversations."""
+    """Extract structured facts from recent conversations (JSONL sessions)."""
     from nanobot.config.loader import get_data_dir, load_config
     from nanobot.cron.service import CronService
     from nanobot.cron.types import CronSchedule
     from nanobot.memory.crystallize import crystallize_memories
+    from nanobot.session.manager import SessionManager
 
     config = load_config()
     provider = _make_provider(config)
+    session_manager = SessionManager(config.workspace_path)
 
     safe_limit = max(1, messages_limit)
+    safe_sessions = max(1, sessions_limit)
     console.print(
         f"{__logo__} Running memory crystallization "
-        f"(messages={safe_limit}, model={model})..."
+        f"(sessions={safe_sessions}, messages={safe_limit}, model={model})..."
     )
 
     result = asyncio.run(
         crystallize_memories(
             provider=provider,
+            session_manager=session_manager,
+            sessions_limit=safe_sessions,
             messages_limit=safe_limit,
             model=model,
         )
@@ -564,7 +574,7 @@ def crystallize(
             job = cron_service.add_job(
                 name="memory-crystallize-daily",
                 schedule=CronSchedule(kind="cron", expr=daily_cron),
-                message=f"/crystallize {safe_limit} {model}",
+                message=f"/crystallize --messages-limit {safe_limit} --sessions-limit {safe_sessions} --model {model}",
             )
             console.print(
                 f"[green]✓[/green] Scheduled daily crystallization job "

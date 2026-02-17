@@ -148,11 +148,17 @@ async def test_crystallize_with_hierarchy(
     db_file = tmp_path / "test_hmem.db"
     monkeypatch.setattr("nanobot.memory.db.DB_PATH", db_file)
 
-    from nanobot.memory.db import add_message
-
     init_db()
-    add_message("test_chat", "user", "I prefer Python and use Cursor IDE")
-    add_message("test_chat", "assistant", "Got it")
+
+    # Mock SessionManager: диалоги хранятся в JSONL через SessionManager, не в SQLite
+    mock_session = MagicMock()
+    mock_session.messages = [
+        {"role": "user", "content": "I prefer Python and use Cursor IDE", "timestamp": "2024-01-01T00:00:00"},
+        {"role": "assistant", "content": "Got it", "timestamp": "2024-01-01T00:00:01"},
+    ]
+    mock_session_manager = MagicMock()
+    mock_session_manager.list_sessions.return_value = [{"key": "test_chat"}]
+    mock_session_manager.get_or_create.return_value = mock_session
 
     mock_response = LLMResponse(
         content='[{"domain":"User Preferences","category":"Technology","sub_category":"Programming","key":"Language","value":"Python"},{"domain":"User Preferences","category":"Technology","sub_category":null,"key":"IDE","value":"Cursor"}]'
@@ -161,7 +167,11 @@ async def test_crystallize_with_hierarchy(
     mock_provider.chat = AsyncMock(return_value=mock_response)
 
     with patch("nanobot.memory.db.add_vector_memory"):
-        result = await crystallize_memories(mock_provider, messages_limit=10)
+        result = await crystallize_memories(
+            mock_provider,
+            session_manager=mock_session_manager,
+            messages_limit=10,
+        )
 
     assert result["saved_facts"] >= 1
     assert result["extracted_facts"] >= 1
