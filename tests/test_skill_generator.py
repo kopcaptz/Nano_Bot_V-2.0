@@ -111,6 +111,53 @@ async def test_create_skill_from_trajectory(tmp_path: Path) -> None:
     assert "Use list_dir" in content
 
 
+# ---------- Test 2b: create_skill_registers_in_skill_manager ----------
+
+
+@pytest.mark.asyncio
+async def test_create_skill_registers_in_skill_manager(tmp_path: Path) -> None:
+    """When skill_manager is provided, add_skill is called after file creation."""
+    mock_provider = MagicMock()
+    mock_provider.chat = AsyncMock(
+        return_value=LLMResponse(
+            content="## Steps\n1. Use list_dir",
+        )
+    )
+    mock_skill_manager = MagicMock()
+
+    generator = SkillGenerator(
+        tmp_path, mock_provider, "test-model", skill_manager=mock_skill_manager
+    )
+    messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "function": {"name": "list_dir", "arguments": '{"path": "."}'},
+                },
+            ],
+        },
+        {"role": "tool", "content": "file1.txt"},
+    ]
+
+    result = await generator.create_skill_from_trajectory(
+        skill_name="registered_skill",
+        skill_description="Registered description",
+        messages=messages,
+    )
+
+    assert "created successfully" in result
+    mock_skill_manager.add_skill.assert_called_once()
+    call_kwargs = mock_skill_manager.add_skill.call_args[1]
+    assert call_kwargs["name"] == "registered_skill"
+    assert call_kwargs["description"] == "Registered description"
+    assert call_kwargs["tags"] == []
+    assert call_kwargs["skill_type"] == "basic"
+    assert isinstance(call_kwargs["content"], str)
+    assert "## Steps" in call_kwargs["content"]
+    assert "Registered description" in call_kwargs["content"]
+
+
 # ---------- Test 3: create_skill_no_tool_calls ----------
 
 

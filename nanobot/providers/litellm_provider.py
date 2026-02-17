@@ -147,7 +147,10 @@ class LiteLLMProvider(LLMProvider):
         if tools:
             kwargs["tools"] = tools
             kwargs["tool_choice"] = "auto"
-        
+
+        # Request timeout to avoid hanging (LiteLLM passes this to httpx)
+        kwargs["timeout"] = 120
+
         try:
             response = await acompletion(**kwargs)
             return self._parse_response(response)

@@ -5,56 +5,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from nanobot.memory.vector_manager import VectorDBManager
 
 # Путь к постоянному хранилищу ChromaDB: ~/.nanobot/chroma/
 VECTOR_DB_PATH = Path.home() / ".nanobot" / "chroma"
-COLLECTION_NAME = "nanobot_memory"
+COLLECTION_NAME = "nanobot_facts"
 
-_CLIENT: Any | None = None
+_manager = VectorDBManager(db_path=VECTOR_DB_PATH)
 _COLLECTION: Any | None = None
-_EMBEDDING_FN: Any | None = None
-_EMBEDDING_READY = False
-
-
-def _get_client() -> Any:
-    """Возвращает persistent-клиент ChromaDB."""
-    global _CLIENT
-    if _CLIENT is not None:
-        return _CLIENT
-
-    try:
-        import chromadb
-    except Exception as exc:  # pragma: no cover - зависит от окружения
-        raise RuntimeError("ChromaDB недоступен в текущем окружении") from exc
-
-    VECTOR_DB_PATH.mkdir(parents=True, exist_ok=True)
-    _CLIENT = chromadb.PersistentClient(path=str(VECTOR_DB_PATH))
-    return _CLIENT
-
-
-def _get_embedding_function() -> Any | None:
-    """
-    Возвращает embedding-функцию для коллекции.
-
-    Предпочитаем all-MiniLM-L6-v2 (качественный и легкий вариант).
-    Если модель/зависимости недоступны, Chroma использует встроенный default.
-    """
-    global _EMBEDDING_FN, _EMBEDDING_READY
-    if _EMBEDDING_READY:
-        return _EMBEDDING_FN
-
-    _EMBEDDING_READY = True
-    try:
-        from chromadb.utils.embedding_functions import (
-            SentenceTransformerEmbeddingFunction,
-        )
-
-        _EMBEDDING_FN = SentenceTransformerEmbeddingFunction(
-            model_name="all-MiniLM-L6-v2"
-        )
-    except Exception:
-        _EMBEDDING_FN = None
-    return _EMBEDDING_FN
 
 
 def _normalize_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
@@ -79,25 +37,13 @@ def init_vector_db() -> Any:
     if _COLLECTION is not None:
         return _COLLECTION
 
-    client = _get_client()
-    embedding_fn = _get_embedding_function()
-
-    # Если embedding-функция не поднялась, используем встроенный default Chroma.
-    if embedding_fn is not None:
-        _COLLECTION = client.get_or_create_collection(
-            name=COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"},
-            embedding_function=embedding_fn,
-        )
-    else:
-        _COLLECTION = client.get_or_create_collection(
-            name=COLLECTION_NAME,
-            metadata={"hnsw:space": "cosine"},
-        )
+    _COLLECTION = _manager.get_collection(COLLECTION_NAME)
     return _COLLECTION
 
 
-def add_memory(memory_id: str, text: str, metadata: dict[str, Any] | None = None) -> None:
+def add_memory(
+    memory_id: str, text: str, metadata: dict[str, Any] | None = None
+) -> None:
     """Добавляет или обновляет запись в векторной памяти."""
     if not text or not text.strip():
         return

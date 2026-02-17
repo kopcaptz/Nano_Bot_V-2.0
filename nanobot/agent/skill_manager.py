@@ -10,17 +10,18 @@ from loguru import logger
 from nanobot.agent.skill_composer import SkillComposer
 from nanobot.agent.skill_repository import SkillRepository
 from nanobot.agent.skill_vector_search import SkillVectorSearch
+from nanobot.memory.vector_manager import VectorDBManager
 
 
 class SkillManager:
     """
     Main interface for the Skills Management System.
-    
+
     Integrates:
     - SkillRepository: SQLite storage with versioning
-    - SkillVectorSearch: HNSW-based semantic search
+    - SkillVectorSearch: ChromaDB-based semantic search
     - SkillComposer: Automatic skill composition
-    
+
     Features:
     - Hierarchical skill organization (meta/composite/basic)
     - Semantic search with vector embeddings
@@ -28,25 +29,31 @@ class SkillManager:
     - Version control and history tracking
     - Usage statistics and optimization
     """
-    
+
     def __init__(
         self,
         storage_dir: Path | str,
         auto_sync: bool = True,
+        db_manager: VectorDBManager | None = None,
     ):
         """
         Initialize skill manager.
-        
+
         Args:
             storage_dir: Directory for all skill data
             auto_sync: Automatically sync repository changes to vector index
+            db_manager: Optional VectorDBManager (uses ~/.nanobot/chroma if not provided)
         """
         self.storage_dir = Path(storage_dir)
         self.storage_dir.mkdir(parents=True, exist_ok=True)
-        
+
+        if db_manager is None:
+            db_path = Path.home() / ".nanobot" / "chroma"
+            db_manager = VectorDBManager(db_path)
+
         # Initialize components
         self.repository = SkillRepository(self.storage_dir / "skills.db")
-        self.vector_search = SkillVectorSearch(self.storage_dir / "index")
+        self.vector_search = SkillVectorSearch(db_manager)
         self.composer = SkillComposer(self)
         
         self.auto_sync = auto_sync
@@ -65,10 +72,11 @@ class SkillManager:
         description: str | None = None,
         tags: list[str] | None = None,
         dependencies: list[str] | None = None,
+        always_load: bool = False,
     ) -> int:
         """
         Add a new skill.
-        
+
         Args:
             name: Unique skill name
             content: Skill content (markdown)
@@ -76,7 +84,8 @@ class SkillManager:
             description: Short description
             tags: List of tags
             dependencies: List of required skills
-        
+            always_load: If True, skill is always loaded into context
+
         Returns:
             Skill ID
         """
@@ -89,13 +98,21 @@ class SkillManager:
             tags=tags,
             dependencies=dependencies,
         )
-        
-        # Add to vector index
+
+        # Add to vector index with metadata
         if self.auto_sync:
-            self.vector_search.add_skill(name, content, skill_type)
-            self.vector_search.save()
-        
-        logger.info(f"Added skill '{name}' (type: {skill_type})")
+            metadata = {
+                "skill_type": skill_type,
+                "description": description or "",
+                "tags": ",".join(tags) if tags else "",
+                "always_load": always_load,
+            }
+            self.vector_search.add_skill(
+                name, content, skill_type=skill_type, metadata=metadata
+            )
+            logger.debug("Skill '{}' synced to vector index", name)
+
+        logger.info("Added skill '{}' (type={})", name, skill_type)
         return skill_id
     
     def update_skill(
@@ -103,25 +120,35 @@ class SkillManager:
     ) -> bool:
         """
         Update skill content (creates new version).
-        
+
         Args:
             name: Skill name
             content: New content
             change_description: Description of changes
-        
+
         Returns:
             True if updated successfully
         """
         success = self.repository.update_skill(name, content, change_description)
-        
+
         if success and self.auto_sync:
             skill = self.repository.get_skill(name)
             if skill:
+                metadata = {
+                    "skill_type": skill.get("skill_type", "basic"),
+                    "description": skill.get("description") or "",
+                    "tags": ",".join(skill.get("tags") or []),
+                    "always_load": skill.get("always_load", False),
+                }
                 self.vector_search.add_skill(
-                    name, content, skill.get("skill_type", "basic")
+                    name,
+                    content,
+                    skill_type=skill.get("skill_type", "basic"),
+                    metadata=metadata,
                 )
-                self.vector_search.save()
-        
+                logger.debug("Skill '{}' synced to vector index (update)", name)
+            logger.info("Updated skill '{}'", name)
+
         return success
     
     def get_skill(self, name: str) -> dict[str, Any] | None:
@@ -150,7 +177,25 @@ class SkillManager:
             List of skill dicts
         """
         return self.repository.list_skills(skill_type=skill_type, tags=tags)
-    
+
+    def list_always_load_skills(self) -> list[dict[str, Any]]:
+        """
+        Return skills with always_load=true from vector index.
+
+        Enriches with full data from SkillRepository.
+
+        Returns:
+            List of skill dicts with full data
+        """
+        raw = self.vector_search.get_by_filter(where={"always_load": True})
+        enriched = []
+        for item in raw:
+            skill = self.repository.get_skill(item["skill_name"])
+            if skill:
+                enriched.append(skill)
+        logger.debug("list_always_load_skills: {} skills", len(enriched))
+        return enriched
+
     def search_skills(
         self,
         query: str,
@@ -159,15 +204,21 @@ class SkillManager:
     ) -> list[dict[str, Any]]:
         """
         Semantic search for skills.
-        
+
         Args:
             query: Natural language query
             limit: Maximum results
             skill_type: Optional type filter
-        
+
         Returns:
             List of results with skill_name, score, distance
         """
+        logger.debug(
+            "search_skills: query='{}', limit={}, skill_type={}",
+            query[:50] if query else "",
+            limit,
+            skill_type,
+        )
         results = self.vector_search.search(query, limit=limit, skill_type=skill_type)
         
         # Enrich with repository data
@@ -322,19 +373,20 @@ class SkillManager:
     def delete_skill(self, name: str) -> bool:
         """
         Delete a skill.
-        
+
         Args:
             name: Skill name
-        
+
         Returns:
             True if deleted successfully
         """
         success = self.repository.delete_skill(name)
-        
+
         if success and self.auto_sync:
             self.vector_search.remove_skill(name)
-            self.vector_search.save()
-        
+
+        if success:
+            logger.info("Skill '{}' deleted from repository and vector index", name)
         return success
     
     def rebuild_index(self) -> None:
@@ -343,12 +395,18 @@ class SkillManager:
         
         all_skills = self.repository.list_skills()
         skills_data = []
-        
+
         for skill_info in all_skills:
             skill = self.repository.get_skill(skill_info["name"])
             if skill:
-                skills_data.append((skill["name"], skill["content"]))
-        
+                meta = {
+                    "skill_type": skill.get("skill_type", "basic"),
+                    "description": skill.get("description") or "",
+                    "tags": ",".join(skill.get("tags") or []),
+                    "always_load": skill.get("always_load", False),
+                }
+                skills_data.append((skill["name"], skill["content"], meta))
+
         self.vector_search.rebuild_index(skills_data)
         logger.info(f"Index rebuilt with {len(skills_data)} skills")
     

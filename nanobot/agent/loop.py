@@ -13,6 +13,8 @@ from nanobot.bus.queue import MessageBus
 from nanobot.providers.base import LLMProvider
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.reflection import Reflection
+from nanobot.agent.skill_manager import SkillManager
+from nanobot.memory.vector_manager import VectorDBManager
 from nanobot.agent.skill_generator import SkillGenerator
 from nanobot.agent.tools.policy import ToolPolicy
 from nanobot.agent.tools.skill import CreateSkillTool
@@ -65,8 +67,14 @@ class AgentLoop:
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
-        
-        self.context = ContextBuilder(workspace)
+
+        # VectorDBManager + SkillManager для семантического подбора навыков
+        db_path = Path.home() / ".nanobot" / "chroma"
+        db_manager = VectorDBManager(db_path)
+        skill_storage = Path.home() / ".nanobot" / "skills"
+        self.skill_manager = SkillManager(skill_storage, db_manager=db_manager)
+
+        self.context = ContextBuilder(workspace, skill_manager=self.skill_manager)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         self.reflection = Reflection(provider=provider, model=self.model)
@@ -74,6 +82,7 @@ class AgentLoop:
             skills_dir=self.workspace / "skills",
             provider=provider,
             model=self.model,
+            skill_manager=self.skill_manager,
         )
         self.subagents = SubagentManager(
             provider=provider,
@@ -223,12 +232,29 @@ class AgentLoop:
         while iteration < self.max_iterations:
             iteration += 1
             
-            # Call LLM
-            response = await self.provider.chat(
-                messages=messages,
-                tools=self.tools.get_definitions(),
-                model=self.model
-            )
+            # Call LLM (with timeout to avoid hanging)
+            try:
+                logger.info(f"LLM call iteration {iteration}...")
+                response = await asyncio.wait_for(
+                    self.provider.chat(
+                        messages=messages,
+                        tools=self.tools.get_definitions(),
+                        model=self.model
+                    ),
+                    timeout=120.0,
+                )
+            except asyncio.TimeoutError:
+                logger.error("LLM call timed out after 120s")
+                final_content = "Извини, сервер не успел ответить вовремя (таймаут 2 мин). Попробуй ещё раз."
+                session.add_message("user", msg.content)
+                session.add_message("assistant", final_content)
+                self.sessions.save(session)
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content=final_content,
+                    metadata=msg.metadata or {},
+                )
             
             # Handle tool calls
             if response.has_tool_calls:
@@ -456,11 +482,27 @@ class AgentLoop:
         while iteration < self.max_iterations:
             iteration += 1
 
-            response = await self.provider.chat(
-                messages=messages,
-                tools=self.tools.get_definitions(),
-                model=self.model,
-            )
+            try:
+                response = await asyncio.wait_for(
+                    self.provider.chat(
+                        messages=messages,
+                        tools=self.tools.get_definitions(),
+                        model=self.model,
+                    ),
+                    timeout=120.0,
+                )
+            except asyncio.TimeoutError:
+                logger.error("LLM call timed out (continue_after_tool)")
+                final_content = "Извини, сервер не успел ответить вовремя. Попробуй ещё раз."
+                session.add_message("user", original_user_message)
+                session.add_message("assistant", final_content)
+                self.sessions.save(session)
+                return OutboundMessage(
+                    channel=msg.channel,
+                    chat_id=msg.chat_id,
+                    content=final_content,
+                    metadata=msg.metadata or {},
+                )
 
             if response.has_tool_calls:
                 tool_call_dicts = [
@@ -615,11 +657,26 @@ class AgentLoop:
         while iteration < self.max_iterations:
             iteration += 1
             
-            response = await self.provider.chat(
-                messages=messages,
-                tools=self.tools.get_definitions(),
-                model=self.model
-            )
+            try:
+                response = await asyncio.wait_for(
+                    self.provider.chat(
+                        messages=messages,
+                        tools=self.tools.get_definitions(),
+                        model=self.model
+                    ),
+                    timeout=120.0,
+                )
+            except asyncio.TimeoutError:
+                logger.error("LLM call timed out (system message)")
+                final_content = "Background task timed out."
+                session.add_message("user", f"[System: {msg.sender_id}] {msg.content}")
+                session.add_message("assistant", final_content)
+                self.sessions.save(session)
+                return OutboundMessage(
+                    channel=origin_channel,
+                    chat_id=origin_chat_id,
+                    content=final_content
+                )
             
             if response.has_tool_calls:
                 tool_call_dicts = [

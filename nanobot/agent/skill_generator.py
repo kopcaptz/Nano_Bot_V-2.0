@@ -1,12 +1,17 @@
 """Skill generator: creates reusable skills from successful tool call trajectories."""
 
+from __future__ import annotations
+
 import json
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
 from nanobot.providers.base import LLMProvider
+
+if TYPE_CHECKING:
+    from nanobot.agent.skill_manager import SkillManager
 
 
 SKILL_GENERATION_PROMPT = """Analyze the following successful tool call sequence from an AI agent session. Your task is to convert this into a generalized, reusable skill instruction.
@@ -58,6 +63,7 @@ class SkillGenerator:
         skills_dir: Path,
         provider: LLMProvider,
         model: str,
+        skill_manager: SkillManager | None = None,
     ) -> None:
         """
         Initialize SkillGenerator.
@@ -66,10 +72,12 @@ class SkillGenerator:
             skills_dir: Directory where skills are stored (e.g., Path("workspace/skills"))
             provider: LLM provider for generating skill content
             model: Model name to use for generation
+            skill_manager: Optional SkillManager to register created skills
         """
         self.skills_dir = Path(skills_dir)
         self.provider = provider
         self.model = model
+        self.skill_manager = skill_manager
 
     def _extract_tool_sequence(self, messages: list[dict[str, Any]]) -> str:
         """
@@ -167,4 +175,23 @@ class SkillGenerator:
         skill_file.write_text(skill_content, encoding="utf-8")
 
         logger.info(f"Skill '{skill_name}' created at {skill_file}")
+
+        # Register in SkillManager if available
+        if self.skill_manager:
+            try:
+                self.skill_manager.add_skill(
+                    name=skill_name,
+                    content=skill_content,
+                    description=skill_description,
+                    tags=[],
+                    skill_type="basic",
+                )
+                logger.info(f"Skill '{skill_name}' registered in SkillManager")
+            except ValueError as e:
+                logger.warning(
+                    f"Skill '{skill_name}' already exists in SkillManager: {e}"
+                )
+            except Exception as e:
+                logger.error(f"Failed to register skill in SkillManager: {e}")
+
         return f"Skill '{skill_name}' created successfully at {skill_file}"

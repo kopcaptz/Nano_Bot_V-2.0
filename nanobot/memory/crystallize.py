@@ -3,12 +3,58 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
 
-from nanobot.memory.db import add_fact, get_recent_conversations
+from nanobot.memory.db import add_fact
 from nanobot.providers.base import LLMProvider
+
+
+def _get_sessions_dir() -> Path:
+    """Путь к директории сессий (monkeypatch в тестах)."""
+    return Path.home() / ".nanobot" / "sessions"
+
+
+def _load_messages_from_sessions(limit: int = 100) -> list[dict[str, Any]]:
+    """
+    Читает сообщения из JSONL-файлов SessionManager (~/.nanobot/sessions/).
+
+    Возвращает список в формате crystallize: chat_id, role, timestamp, message.
+    Сообщения отсортированы по timestamp, возвращаются последние limit.
+    """
+    sessions_dir = _get_sessions_dir()
+    if not sessions_dir.exists():
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for path in sessions_dir.glob("*.jsonl"):
+        try:
+            key = path.stem.replace("_", ":")
+            with open(path, encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    data = json.loads(line)
+                    if data.get("_type") == "metadata":
+                        continue
+                    role = str(data.get("role", ""))
+                    content = str(data.get("content", ""))
+                    timestamp = str(data.get("timestamp", ""))
+                    rows.append({
+                        "chat_id": key,
+                        "role": role,
+                        "timestamp": timestamp,
+                        "message": content,
+                    })
+        except (json.JSONDecodeError, OSError) as exc:
+            logger.debug(f"Crystallize: skip {path.name}: {exc}")
+            continue
+
+    rows.sort(key=lambda r: r.get("timestamp", ""))
+    return rows[-limit:] if len(rows) > limit else rows
 
 
 CRYSTALLIZE_PROMPT = """Analyze the following dialogues. Extract key facts and user preferences, structuring them hierarchically.
@@ -138,7 +184,7 @@ async def crystallize_memories(
     Returns:
         Сводка выполнения (сколько сообщений обработано, сколько фактов сохранено и т.д.).
     """
-    rows = get_recent_conversations(limit=messages_limit)
+    rows = _load_messages_from_sessions(limit=messages_limit)
     if not rows:
         return {
             "processed_messages": 0,

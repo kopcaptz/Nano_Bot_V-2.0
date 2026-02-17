@@ -1,0 +1,38 @@
+[
+  {
+    "test": "Smithery CLI доступность",
+    "status": "PASS",
+    "details": "Найден: C:\\Users\\kopca\\AppData\\Roaming\\npm\\smithery.CMD",
+    "timestamp": "2026-02-18T00:06:17.702278"
+  },
+  {
+    "test": "Список инструментов Calendar",
+    "status": "PASS",
+    "details": "Найдено 0 инструментов. Примеры: ",
+    "timestamp": "2026-02-18T00:06:21.288260"
+  },
+  {
+    "test": "Вызов events_list",
+    "status": "WARN",
+    "details": "Ошибка: 403 Missing required permission: connections:read in namespace minnow-QPDS",
+    "timestamp": "2026-02-18T00:06:25.672932"
+  },
+  {
+    "test": "Handler календарные regex",
+    "status": "PASS",
+    "details": "Прошло 4/4 тестов",
+    "timestamp": "2026-02-18T00:06:27.080196"
+  },
+  {
+    "test": "Handler разрешение дат",
+    "status": "PASS",
+    "details": "Распознано 4/4 относительных дат",
+    "timestamp": "2026-02-18T00:06:28.481706"
+  },
+  {
+    "test": "LLM Router системный промпт",
+    "status": "PASS",
+    "details": "Найдено 6/6 элементов. Отсутствует: нет",
+    "timestamp": "2026-02-18T00:06:29.956286"
+  }
+]

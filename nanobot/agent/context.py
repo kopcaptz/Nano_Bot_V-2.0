@@ -1,14 +1,20 @@
 """Context builder for assembling agent prompts."""
 
 import base64
+import json
 import mimetypes
 import platform
+import time
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from loguru import logger
 
 from nanobot.agent.memory import MemoryStore
-from nanobot.agent.skills import SkillsLoader
 from nanobot.memory.db import semantic_search
+
+if TYPE_CHECKING:
+    from nanobot.agent.skill_manager import SkillManager
 
 
 class ContextBuilder:
@@ -21,21 +27,27 @@ class ContextBuilder:
     
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
     
-    def __init__(self, workspace: Path):
+    def __init__(self, workspace: Path, skill_manager: "SkillManager | None" = None):
         self.workspace = workspace
         self.memory = MemoryStore(workspace)
-        self.skills = SkillsLoader(workspace)
+        self.skill_manager = skill_manager
     
-    def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
+    def build_system_prompt(
+        self,
+        user_query: str = "",
+        skill_names: list[str] | None = None,
+    ) -> str:
         """
         Build the system prompt from bootstrap files, memory, and skills.
         
         Args:
-            skill_names: Optional list of skills to include.
+            user_query: Current user message for semantic skill search.
+            skill_names: Optional list of skills to include (kept for compatibility).
         
         Returns:
             Complete system prompt.
         """
+        t_total_start = time.perf_counter()
         parts = []
         
         # Core identity
@@ -51,23 +63,89 @@ class ContextBuilder:
         if memory:
             parts.append(f"# Memory\n\n{memory}")
         
-        # Skills - progressive loading
-        # 1. Always-loaded skills: include full content
-        always_skills = self.skills.get_always_skills()
-        if always_skills:
-            always_content = self.skills.load_skills_for_context(always_skills)
-            if always_content:
-                parts.append(f"# Active Skills\n\n{always_content}")
+        # Skills via SkillManager (fallback if skill_manager is None)
+        skills_parts = []
+        seen: set[str] = set()
+        elapsed_always_load_ms = 0.0
+        elapsed_search_ms = 0.0
+        search_error: str | None = None
         
-        # 2. Available skills: only show summary (agent uses read_file to load)
-        skills_summary = self.skills.build_skills_summary()
-        if skills_summary:
-            parts.append(f"""# Skills
-
-The following skills extend your capabilities. To use a skill, read its SKILL.md file using the read_file tool.
-Skills with available="false" need dependencies installed first - you can try installing them with apt/brew.
-
-{skills_summary}""")
+        if self.skill_manager:
+            try:
+                # 1. Always-load skills (with timing)
+                t0_always = time.perf_counter()
+                always_skills = self.skill_manager.list_always_load_skills()
+                elapsed_always_load_ms = (time.perf_counter() - t0_always) * 1000
+                
+                active_content_parts = []
+                for skill in always_skills:
+                    content = skill.get("content", "")
+                    if content:
+                        name = skill.get("name", "")
+                        if name:
+                            seen.add(name)
+                        active_content_parts.append(f"### Skill: {name}\n\n{content}")
+                
+                # 2. Semantic search (with timing)
+                search_results = []
+                if user_query and len(user_query.strip()) > 3:
+                    t0_search = time.perf_counter()
+                    try:
+                        search_results = self.skill_manager.search_skills(
+                            user_query, limit=3
+                        )
+                        elapsed_search_ms = (time.perf_counter() - t0_search) * 1000
+                    except Exception as e:
+                        elapsed_search_ms = (time.perf_counter() - t0_search) * 1000
+                        search_error = str(e)
+                        logger.warning("search_skills failed: {}", e)
+                    for r in search_results:
+                        name = r.get("skill_name")
+                        if name and name not in seen:
+                            seen.add(name)
+                            skill = self.skill_manager.get_skill(name)
+                            if skill and skill.get("content"):
+                                active_content_parts.append(
+                                    f"### Skill: {name} (relevant to query)\n\n{skill['content']}"
+                                )
+                
+                if active_content_parts:
+                    skills_parts.append(
+                        "# Active Skills\n\n"
+                        + "\n\n---\n\n".join(active_content_parts)
+                    )
+                
+                # 3. Available Skills (summary of remaining)
+                all_skills = self.skill_manager.list_skills()
+                available = [s for s in all_skills if s.get("name") not in seen]
+                if available:
+                    summary_lines = [
+                        f"- {s['name']}: {s.get('description', s['name'])}"
+                        for s in available
+                    ]
+                    skills_parts.append(
+                        "# Available Skills\n\n"
+                        + "\n".join(summary_lines)
+                        + "\n\nUse read_file to load a skill."
+                    )
+            except Exception as e:
+                logger.warning("SkillManager error in build_system_prompt: {}", e)
+        
+        if skills_parts:
+            parts.append("\n\n".join(skills_parts))
+        
+        elapsed_total_ms = (time.perf_counter() - t_total_start) * 1000
+        metrics = {
+            "event": "build_system_prompt",
+            "always_load_ms": round(elapsed_always_load_ms, 2),
+            "semantic_search_ms": round(elapsed_search_ms, 2),
+            "total_ms": round(elapsed_total_ms, 2),
+        }
+        if not self.skill_manager:
+            metrics["skill_manager"] = False
+        if search_error:
+            metrics["error"] = search_error
+        logger.info(json.dumps(metrics))
         
         return "\n\n---\n\n".join(parts)
     
@@ -159,7 +237,7 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
         messages = []
 
         # System prompt
-        system_prompt = self.build_system_prompt(skill_names)
+        system_prompt = self.build_system_prompt(user_query=current_message or "")
         if channel and chat_id:
             system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
         messages.append({"role": "system", "content": system_prompt})

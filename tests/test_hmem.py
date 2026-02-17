@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -141,18 +143,29 @@ async def test_memory_search_tool_requires_query() -> None:
 
 @pytest.mark.asyncio
 async def test_crystallize_with_hierarchy(
-    tmp_path: pytest.TempPathFactory,
+    tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """crystallize_memories saves facts with domain and sub_category from LLM response."""
+    """crystallize_memories reads from SessionManager JSONL and saves facts with domain/sub_category."""
+    from datetime import datetime
+
     db_file = tmp_path / "test_hmem.db"
     monkeypatch.setattr("nanobot.memory.db.DB_PATH", db_file)
 
-    from nanobot.memory.db import add_message
+    # Записываем тестовую сессию в формате SessionManager (JSONL)
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    session_file = sessions_dir / "test_chat.jsonl"
+    now_iso = datetime.now().isoformat()
+    metadata = {"_type": "metadata", "created_at": now_iso, "updated_at": now_iso, "metadata": {}, "pending_confirmation": None}
+    with open(session_file, "w", encoding="utf-8") as f:
+        f.write(json.dumps(metadata) + "\n")
+        f.write(json.dumps({"role": "user", "content": "I prefer Python and use Cursor IDE", "timestamp": now_iso}) + "\n")
+        f.write(json.dumps({"role": "assistant", "content": "Got it", "timestamp": now_iso}) + "\n")
+
+    monkeypatch.setattr("nanobot.memory.crystallize._get_sessions_dir", lambda: sessions_dir)
 
     init_db()
-    add_message("test_chat", "user", "I prefer Python and use Cursor IDE")
-    add_message("test_chat", "assistant", "Got it")
 
     mock_response = LLMResponse(
         content='[{"domain":"User Preferences","category":"Technology","sub_category":"Programming","key":"Language","value":"Python"},{"domain":"User Preferences","category":"Technology","sub_category":null,"key":"IDE","value":"Cursor"}]'
@@ -165,6 +178,7 @@ async def test_crystallize_with_hierarchy(
 
     assert result["saved_facts"] >= 1
     assert result["extracted_facts"] >= 1
+    assert result["processed_messages"] >= 2
 
     facts = get_facts_filtered(domain="User Preferences", limit=10)
     assert any(f.get("key") == "Language" and f.get("value") == "Python" for f in facts)
