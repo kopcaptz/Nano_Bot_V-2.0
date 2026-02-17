@@ -69,6 +69,16 @@ def _migrate_config(data: dict) -> dict:
     exec_cfg = tools.get("exec", {})
     if "restrictToWorkspace" in exec_cfg and "restrictToWorkspace" not in tools:
         tools["restrictToWorkspace"] = exec_cfg.pop("restrictToWorkspace")
+
+    # Ensure agents.defaults.notifications exists (migration for notification system)
+    agents = data.setdefault("agents", {})
+    defaults = agents.setdefault("defaults", {})
+    if "notifications" not in defaults:
+        defaults["notifications"] = {
+            "enabled": False,
+            "botToken": "",
+            "defaultChatId": "",
+        }
     return data
 
 

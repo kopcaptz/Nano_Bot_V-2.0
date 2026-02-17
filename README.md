@@ -97,6 +97,67 @@ PYTHONPATH=src python3 -m unittest -v \
   tests/test_llm_router_helpers.py
 ```
 
+Тесты уведомлений (pytest):
+```bash
+pytest tests/test_notifications.py -v
+```
+
+---
+
+## Mobile Notifications
+
+Система push-уведомлений через Telegram для напоминаний и автоматических алертов.
+
+### Типы уведомлений
+
+| Тип | Пример | Когда |
+|-----|--------|-------|
+| **Reminder** | 🔔 Позвонить маме | «Напомни через 30 минут позвонить маме» |
+| **Task complete** | ✅ web_search завершён | Успешное выполнение инструмента |
+| **Error** | 🚨 Ошибка выполнения: timeout | Исключение или ошибка инструмента |
+| **System alert** | ⚠️ Достигнут лимит итераций | Критические системные события |
+
+### Конфигурация
+
+В `~/.nanobot/config.json` или через переменные окружения:
+
+```json
+{
+  "agents": {
+    "defaults": {
+      "notifications": {
+        "enabled": true,
+        "botToken": "YOUR_TELEGRAM_BOT_TOKEN",
+        "defaultChatId": "123456789"
+      }
+    }
+  }
+}
+```
+
+Или через env:
+```
+NANOBOT_AGENTS__DEFAULTS__NOTIFICATIONS__ENABLED=true
+NANOBOT_AGENTS__DEFAULTS__NOTIFICATIONS__BOT_TOKEN=123456:ABC...
+NANOBOT_AGENTS__DEFAULTS__NOTIFICATIONS__DEFAULT_CHAT_ID=123456789
+```
+
+Если Telegram-канал уже настроен, `botToken` можно не указывать — используется токен канала.
+
+### Запуск
+
+Уведомления работают при запуске gateway:
+
+```bash
+nanobot gateway
+```
+
+### Интеграционный тест с реальным Telegram (пропущен по умолчанию)
+
+```bash
+NANOBOT_TEST_TELEGRAM=1 TELEGRAM_BOT_TOKEN=... TELEGRAM_CHAT_ID=... pytest tests/test_notifications.py::test_send_notification_real_telegram -v
+```
+
 ---
 
 ## Быстрые команды в Telegram (MVP)

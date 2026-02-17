@@ -416,6 +416,7 @@ def gateway(
             )
         except KeyboardInterrupt:
             console.print("\nShutting down...")
+        finally:
             heartbeat.stop()
             cron.stop()
             if notification_manager:
