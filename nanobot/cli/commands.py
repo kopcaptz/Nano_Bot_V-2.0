@@ -316,8 +316,18 @@ def gateway(
     # Create cron service first (callback set after agent creation)
     cron_store_path = get_data_dir() / "cron" / "jobs.json"
     cron = CronService(cron_store_path)
+
+    # Notification manager (Telegram push for reminders)
+    notification_manager = None
+    notify_config = config.agents.defaults.notifications
+    bot_token = notify_config.bot_token or config.channels.telegram.token
+    if bot_token and (notify_config.enabled or config.channels.telegram.enabled):
+        from nanobot.notifications import NotificationManager
+        notification_manager = NotificationManager(bot_token=bot_token)
+        notification_manager.start_scheduler()
+        console.print("[green]✓[/green] Push notifications enabled")
     
-    # Create agent with cron service
+    # Create agent with cron service and notifications
     agent = AgentLoop(
         bus=bus,
         provider=provider,
@@ -327,26 +337,44 @@ def gateway(
         brave_api_key=config.tools.web.search.api_key or None,
         exec_config=config.tools.exec,
         cron_service=cron,
+        notification_manager=notification_manager,
         restrict_to_workspace=config.tools.restrict_to_workspace,
         session_manager=session_manager,
     )
     
-    # Set cron callback (needs agent)
+    # Set cron callback (needs agent + notification_manager)
     async def on_cron_job(job: CronJob) -> str | None:
-        """Execute a cron job through the agent."""
+        """Execute a cron job through the agent. Send push if notify_chat_id set."""
+        payload = job.payload
+        if payload.kind == "reminder":
+            # One-shot reminder: just send push, no agent
+            if notification_manager and payload.notify_chat_id:
+                await notification_manager.send_notification(
+                    payload.notify_chat_id,
+                    payload.message,
+                    priority="high",
+                )
+            return payload.message
+
         response = await agent.process_direct(
-            job.payload.message,
+            payload.message,
             session_key=f"cron:{job.id}",
-            channel=job.payload.channel or "cli",
-            chat_id=job.payload.to or "direct",
+            channel=payload.channel or "cli",
+            chat_id=payload.to or "direct",
         )
-        if job.payload.deliver and job.payload.to:
+        if payload.deliver and payload.to:
             from nanobot.bus.events import OutboundMessage
             await bus.publish_outbound(OutboundMessage(
-                channel=job.payload.channel or "cli",
-                chat_id=job.payload.to,
+                channel=payload.channel or "cli",
+                chat_id=payload.to,
                 content=response or ""
             ))
+        if notification_manager and payload.notify_chat_id:
+            await notification_manager.send_notification(
+                payload.notify_chat_id,
+                payload.message,
+                priority="normal",
+            )
         return response
     cron.on_job = on_cron_job
     
@@ -388,6 +416,8 @@ def gateway(
             console.print("\nShutting down...")
             heartbeat.stop()
             cron.stop()
+            if notification_manager:
+                notification_manager.stop_scheduler()
             agent.stop()
             await channels.stop_all()
     
