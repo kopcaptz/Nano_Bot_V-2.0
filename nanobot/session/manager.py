@@ -4,11 +4,14 @@ import json
 from pathlib import Path
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
 from nanobot.utils.helpers import ensure_dir, safe_filename
+
+if TYPE_CHECKING:
+    from nanobot.providers.base import LLMProvider
 
 
 @dataclass
@@ -205,3 +208,111 @@ class SessionManager:
                 continue
         
         return sorted(sessions, key=lambda x: x.get("updated_at", ""), reverse=True)
+
+    # -------------------------------------------------------------------------
+    # LLM summarization
+    # -------------------------------------------------------------------------
+
+    _SUMMARIZATION_PROMPT = """Сожми следующий диалог в краткое изложение ключевых моментов.
+Ответь на том же языке, что и диалог. Сохрани важные факты, решения и контекст.
+Формат: несколько абзацев, без лишних деталей.
+
+Диалог:
+---
+{messages}
+---"""
+
+    async def maybe_summarize(
+        self,
+        session: "Session",
+        provider: "LLMProvider",
+        *,
+        threshold: int = 50,
+        summarization_model: str = "gpt-4o-mini",
+        keep_recent: int = 20,
+    ) -> None:
+        """
+        Summarize old messages when session exceeds threshold.
+
+        Replaces older messages with a single system summary message.
+        Uses a cheap model via LiteLLMProvider. Logs the process and token savings.
+
+        Args:
+            session: Session to possibly summarize.
+            provider: LLM provider (LiteLLMProvider) for summarization.
+            threshold: Min messages to trigger summarization (default 50).
+            summarization_model: Cheap model for summarization (default gpt-4o-mini).
+            keep_recent: Number of recent messages to keep (default 20).
+        """
+        n = len(session.messages)
+        if n < threshold:
+            return
+
+        to_summarize_count = n - keep_recent
+        if to_summarize_count < 10:
+            return
+
+        to_summarize = session.messages[:-keep_recent]
+        messages_text = "\n".join(
+            f"{m.get('role', '?')}: {m.get('content', '')}" for m in to_summarize
+        )
+
+        summary = await self._summarize_messages(
+            provider, messages_text, summarization_model
+        )
+        if not summary or summary.strip() == "":
+            logger.warning(f"Session {session.key}: summarization returned empty result")
+            return
+
+        est_tokens_before = sum(len(str(m.get("content", ""))) for m in to_summarize) // 4
+        est_tokens_after = len(summary) // 4
+        saved = max(0, est_tokens_before - est_tokens_after)
+
+        summary_msg = {
+            "role": "system",
+            "content": f"[Контекст предыдущего диалога]:\n{summary.strip()}",
+            "timestamp": datetime.now().isoformat(),
+        }
+
+        session.messages = [summary_msg] + session.messages[-keep_recent:]
+        session.updated_at = datetime.now()
+
+        logger.info(
+            f"Session {session.key}: compressed {to_summarize_count} messages into 1 "
+            f"(est. {est_tokens_before}→{est_tokens_after} tokens, saved ~{saved})"
+        )
+
+    async def _summarize_messages(
+        self,
+        provider: "LLMProvider",
+        messages_text: str,
+        model: str,
+    ) -> str:
+        """
+        Compress messages into a brief summary using LLM.
+
+        Args:
+            provider: LLM provider.
+            messages_text: Concatenated dialog text.
+            model: Model identifier for summarization.
+
+        Returns:
+            Summary text in the same language as the dialog.
+        """
+        prompt = self._SUMMARIZATION_PROMPT.format(messages=messages_text)
+        msgs = [{"role": "user", "content": prompt}]
+
+        try:
+            response = await provider.chat(
+                msgs,
+                model=model,
+                max_tokens=1024,
+                temperature=0.3,
+            )
+            if response.finish_reason == "error" and response.content:
+                logger.warning(f"Summarization error: {response.content[:200]}")
+                return ""
+            return response.content or ""
+        except Exception as e:
+            logger.warning(f"Summarization failed: {e}")
+            return ""
