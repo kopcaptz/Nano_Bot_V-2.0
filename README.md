@@ -8,7 +8,7 @@
 
 Также включает:
 - EventBus для событийной архитектуры
-- CrystalMemory для контекста диалога
+- SessionManager для контекста диалога
 - OpenRouter LLM Router (модель по умолчанию: `kimi/kimi-k2.5`)
 - graceful shutdown по `SIGINT` / `SIGTERM`
 

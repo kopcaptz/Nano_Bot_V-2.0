@@ -17,7 +17,6 @@ try:  # script mode: python src/main.py
     from core.gateway_bridge import set_workspace as gateway_set_workspace
     from core.handler import CommandHandler
     from core.llm_router import LLMRouter
-    from core.memory import CrystalMemory
 except ModuleNotFoundError:  # package mode: import src.main
     from src.adapters.browser_adapter import BrowserAdapter
     from src.adapters.gmail_adapter import GmailAdapter
@@ -29,9 +28,37 @@ except ModuleNotFoundError:  # package mode: import src.main
     from src.core.gateway_bridge import set_workspace as gateway_set_workspace
     from src.core.handler import CommandHandler
     from src.core.llm_router import LLMRouter
-    from src.core.memory import CrystalMemory
 
 logger = logging.getLogger(__name__)
+
+
+class _LegacyMemory:
+    """Lightweight in-memory chat history for the legacy src/ entrypoint.
+
+    Replaces the deleted CrystalMemory with the same duck-typed interface
+    expected by ``CommandHandler``.
+    """
+
+    def __init__(self, max_messages_per_chat: int = 200) -> None:
+        self._messages: dict[int, list[dict[str, str]]] = {}
+        self.max_messages_per_chat = max_messages_per_chat
+
+    def add_message(self, chat_id: int, role: str, content: str) -> None:
+        if chat_id not in self._messages:
+            self._messages[chat_id] = []
+        normalized_role = (role or "user").strip().lower()
+        if normalized_role not in {"user", "assistant", "system"}:
+            normalized_role = "user"
+        self._messages[chat_id].append({"role": normalized_role, "content": str(content)})
+        if len(self._messages[chat_id]) > self.max_messages_per_chat:
+            overflow = len(self._messages[chat_id]) - self.max_messages_per_chat
+            self._messages[chat_id] = self._messages[chat_id][overflow:]
+
+    def get_history(self, chat_id: int) -> list[dict]:
+        return [dict(item) for item in self._messages.get(chat_id, [])]
+
+    def clear_history(self, chat_id: int) -> None:
+        self._messages.pop(chat_id, None)
 
 
 async def main() -> None:
@@ -41,7 +68,7 @@ async def main() -> None:
     gateway_set_workspace(config.agent_workspace)
 
     event_bus = EventBus()
-    memory = CrystalMemory(max_messages_per_chat=config.memory_max_messages)
+    memory = _LegacyMemory(max_messages_per_chat=config.memory_max_messages)
     llm_router = LLMRouter(
         api_key=config.openrouter_api_key,
         model=config.openrouter_model,

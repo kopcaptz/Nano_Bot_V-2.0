@@ -13,13 +13,11 @@ try:  # script mode: python src.main
     from core.event_bus import EventBus
     from core.gateway_bridge import execute_task as gateway_execute_task
     from core.llm_router import LLMRouter
-    from core.memory import CrystalMemory
     from core.smithery_bridge import SmitheryBridge
 except ModuleNotFoundError:  # package mode: import src.main
     from src.core.event_bus import EventBus
     from src.core.gateway_bridge import execute_task as gateway_execute_task
     from src.core.llm_router import LLMRouter
-    from src.core.memory import CrystalMemory
     from src.core.smithery_bridge import SmitheryBridge
 
 logger = logging.getLogger(__name__)
@@ -55,7 +53,7 @@ class CommandHandler:
         self,
         event_bus: EventBus,
         llm_router: LLMRouter,
-        memory: CrystalMemory,
+        memory: Any,
         max_command_length: int | None = None,
         **adapters: Any,
     ) -> None:

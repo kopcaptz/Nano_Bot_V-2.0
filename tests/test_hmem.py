@@ -148,11 +148,13 @@ async def test_crystallize_with_hierarchy(
     db_file = tmp_path / "test_hmem.db"
     monkeypatch.setattr("nanobot.memory.db.DB_PATH", db_file)
 
-    from nanobot.memory.db import add_message
-
     init_db()
-    add_message("test_chat", "user", "I prefer Python and use Cursor IDE")
-    add_message("test_chat", "assistant", "Got it")
+
+    # Provide session messages directly (conversations table removed)
+    session_messages = [
+        {"role": "user", "content": "I prefer Python and use Cursor IDE", "timestamp": "2025-01-01T00:00:00"},
+        {"role": "assistant", "content": "Got it", "timestamp": "2025-01-01T00:00:01"},
+    ]
 
     mock_response = LLMResponse(
         content='[{"domain":"User Preferences","category":"Technology","sub_category":"Programming","key":"Language","value":"Python"},{"domain":"User Preferences","category":"Technology","sub_category":null,"key":"IDE","value":"Cursor"}]'
@@ -161,7 +163,9 @@ async def test_crystallize_with_hierarchy(
     mock_provider.chat = AsyncMock(return_value=mock_response)
 
     with patch("nanobot.memory.db.add_vector_memory"):
-        result = await crystallize_memories(mock_provider, messages_limit=10)
+        result = await crystallize_memories(
+            mock_provider, messages_limit=10, session_messages=session_messages,
+        )
 
     assert result["saved_facts"] >= 1
     assert result["extracted_facts"] >= 1
