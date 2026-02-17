@@ -14,6 +14,7 @@ from nanobot.providers.base import LLMProvider
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.reflection import Reflection
 from nanobot.agent.skill_generator import SkillGenerator
+from nanobot.agent.skill_manager import SkillManager
 from nanobot.agent.tools.policy import ToolPolicy
 from nanobot.agent.tools.skill import CreateSkillTool
 from nanobot.agent.tools.registry import ToolRegistry
@@ -66,7 +67,13 @@ class AgentLoop:
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
         
-        self.context = ContextBuilder(workspace)
+        # SkillManager: semantic search over all registered skills
+        self.skill_manager = SkillManager(
+            storage_dir=workspace / ".skill_manager",
+            auto_sync=True,
+        )
+        
+        self.context = ContextBuilder(workspace, skill_manager=self.skill_manager)
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         self.reflection = Reflection(provider=provider, model=self.model)
