@@ -13,14 +13,14 @@ try:  # script mode: python src.main
     from core.event_bus import EventBus
     from core.gateway_bridge import execute_task as gateway_execute_task
     from core.llm_router import LLMRouter
-    from core.memory import CrystalMemory
     from core.smithery_bridge import SmitheryBridge
 except ModuleNotFoundError:  # package mode: import src.main
     from src.core.event_bus import EventBus
     from src.core.gateway_bridge import execute_task as gateway_execute_task
     from src.core.llm_router import LLMRouter
-    from src.core.memory import CrystalMemory
     from src.core.smithery_bridge import SmitheryBridge
+
+from nanobot.session.manager import SessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -51,17 +51,21 @@ class CommandHandler:
         "Агентный режим — напиши задачу (код, файлы, команды), бот переключится в агентный режим"
     )
 
+    SESSION_KEY_PREFIX = "handler"
+
     def __init__(
         self,
         event_bus: EventBus,
         llm_router: LLMRouter,
-        memory: CrystalMemory,
+        session_manager: SessionManager,
         max_command_length: int | None = None,
+        max_messages_per_chat: int = 200,
         **adapters: Any,
     ) -> None:
         self.event_bus = event_bus
         self.llm_router = llm_router
-        self.memory = memory
+        self.session_manager = session_manager
+        self.max_messages_per_chat = max_messages_per_chat
         self.adapters = adapters
         self.max_command_length = max_command_length or self.DEFAULT_MAX_COMMAND_LENGTH
         self._initialized = False
@@ -70,12 +74,38 @@ class CommandHandler:
         # Debounce buffer: {chat_id: {"messages": [str], "task": asyncio.Task}}
         self._debounce_buffer: dict[int, dict[str, Any]] = {}
 
+    def _session_key(self, chat_id: int) -> str:
+        """Build a unique session key for the given chat."""
+        return f"{self.SESSION_KEY_PREFIX}:{chat_id}"
+
+    def _get_session_history(self, chat_id: int) -> list[dict]:
+        """Load conversation history from SessionManager."""
+        session = self.session_manager.get_or_create(self._session_key(chat_id))
+        return session.get_history(max_messages=self.max_messages_per_chat)
+
+    def _add_session_message(self, chat_id: int, role: str, content: str) -> None:
+        """Persist a single message via SessionManager."""
+        session = self.session_manager.get_or_create(self._session_key(chat_id))
+        session.add_message(role, content)
+        # Trim history if it exceeds the limit
+        if len(session.messages) > self.max_messages_per_chat:
+            overflow = len(session.messages) - self.max_messages_per_chat
+            session.messages = session.messages[overflow:]
+        self.session_manager.save(session)
+
+    def _clear_session_history(self, chat_id: int) -> None:
+        """Clear conversation history for a chat via SessionManager."""
+        session = self.session_manager.get_or_create(self._session_key(chat_id))
+        session.clear()
+        self.session_manager.save(session)
+
     async def initialize(self) -> None:
         """Register handler subscriptions on the event bus."""
         if self._initialized:
             return
         await self.event_bus.subscribe("telegram.command.received", self.handle_command)
         self._initialized = True
+        logger.info("CommandHandler initialized with persistent SessionManager storage")
 
     async def shutdown(self) -> None:
         """Unregister handler subscriptions from the event bus."""
@@ -196,7 +226,7 @@ class CommandHandler:
             )
             return
 
-        history = self.memory.get_history(chat_id)
+        history = self._get_session_history(chat_id)
 
         try:
             adapter_result = await self._try_adapter_shortcuts(
@@ -228,8 +258,8 @@ class CommandHandler:
             and not normalized_command.startswith("/")
         )
         if should_persist:
-            self.memory.add_message(chat_id, "user", normalized_command)
-            self.memory.add_message(chat_id, "assistant", reply_text)
+            self._add_session_message(chat_id, "user", normalized_command)
+            self._add_session_message(chat_id, "assistant", reply_text)
         await self.event_bus.publish(
             "telegram.send.reply",
             {"chat_id": chat_id, "text": reply_text},
@@ -260,7 +290,7 @@ class CommandHandler:
             return self._build_status_text(chat_id)
 
         if command == "/clear_history":
-            self.memory.clear_history(chat_id)
+            self._clear_session_history(chat_id)
             return "История диалога очищена."
 
         if command == "/system":
@@ -642,7 +672,7 @@ class CommandHandler:
             "Only provide a brief summary of its content.\n\n"
             + wrapped_body
         )
-        history = self.memory.get_history(chat_id)
+        history = self._get_session_history(chat_id)
         return await self.llm_router.process_command(
             command=safe_prompt, context=history,
         )
@@ -655,7 +685,7 @@ class CommandHandler:
             marker = "✅" if running else "⚪"
             lines.append(f"{marker} {name}: {'running' if running else 'stopped'}")
 
-        history_size = len(self.memory.get_history(chat_id))
+        history_size = len(self._get_session_history(chat_id))
         lines.append(f"🧠 history messages: {history_size}")
         lines.append(
             "🚌 bus subscribers(telegram.command.received): "
@@ -686,9 +716,9 @@ class CommandHandler:
         system_timeout = getattr(system_adapter, "command_timeout", None)
         if isinstance(system_timeout, (int, float)):
             lines.append(f"⏱ system command timeout: {float(system_timeout):.1f}s")
-        memory_limit = getattr(self.memory, "max_messages_per_chat", None)
-        if isinstance(memory_limit, int):
-            lines.append(f"🧠 memory limit: {memory_limit}")
+        memory_limit = self.max_messages_per_chat
+        lines.append(f"🧠 memory limit: {memory_limit}")
+        lines.append(f"💾 storage: persistent (SessionManager)")
         lines.append(f"🧾 max command length: {self.max_command_length}")
         return "\n".join(lines)
 
