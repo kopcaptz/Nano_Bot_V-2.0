@@ -3,7 +3,6 @@ from .event_bus import EventBus
 from .handler import CommandHandler
 from .llm_router import LLMRouter
 from .memory import CrystalMemory
-from .smithery_bridge import SmitheryBridge
 from .tool_registry import ToolRegistry
 
 __all__ = [
@@ -11,6 +10,5 @@ __all__ = [
     "CommandHandler",
     "LLMRouter",
     "CrystalMemory",
-    "SmitheryBridge",
     "ToolRegistry",
 ]

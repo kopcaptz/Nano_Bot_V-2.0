@@ -162,29 +162,6 @@ class CommandHandlerShortcutsTests(unittest.IsolatedAsyncioTestCase):
         # Should not call LLM
         self.assertEqual(len(self.llm.calls), 0)
 
-    async def test_calendar_action_triggers_bridge_and_returns_error_when_not_authed(
-        self,
-    ) -> None:
-        """When LLM returns [ACTION:CALENDAR_LIST], handler calls bridge and surfaces auth error."""
-        orig = self.llm.process_command
-
-        async def return_calendar_action(**kwargs: Any) -> str:
-            await orig(**kwargs)
-            return "[ACTION:CALENDAR_LIST]"
-
-        self.llm.process_command = return_calendar_action
-
-        await self.event_bus.publish(
-            "telegram.command.received",
-            {"chat_id": 7007, "command": "Что у меня завтра в календаре?"},
-        )
-        # Debounce 5s + bridge call ~3s
-        await asyncio.sleep(9.0)
-        self.assertTrue(self.replies, msg="Expected at least one reply event")
-        reply = self.replies[-1]
-        self.assertIn("Календарь недоступен", reply["text"])
-        self.assertIn("smithery", reply["text"].lower())
-
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
