@@ -14,7 +14,6 @@ try:  # script mode: python src/main.py
     from adapters.vision_adapter import VisionAdapter
     from config import load_config
     from core.event_bus import EventBus
-    from core.gateway_bridge import set_workspace as gateway_set_workspace
     from core.handler import CommandHandler
     from core.llm_router import LLMRouter
     from core.memory import CrystalMemory
@@ -26,7 +25,6 @@ except ModuleNotFoundError:  # package mode: import src.main
     from src.adapters.vision_adapter import VisionAdapter
     from src.config import load_config
     from src.core.event_bus import EventBus
-    from src.core.gateway_bridge import set_workspace as gateway_set_workspace
     from src.core.handler import CommandHandler
     from src.core.llm_router import LLMRouter
     from src.core.memory import CrystalMemory
@@ -37,8 +35,6 @@ logger = logging.getLogger(__name__)
 async def main() -> None:
     """Initialize all components and run until shutdown signal."""
     config = load_config()
-
-    gateway_set_workspace(config.agent_workspace)
 
     event_bus = EventBus()
     memory = CrystalMemory(max_messages_per_chat=config.memory_max_messages)
