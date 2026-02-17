@@ -25,7 +25,7 @@ from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.tools.memory import MemorySearchTool
 from nanobot.agent.subagent import SubagentManager
-from nanobot.memory.db import add_reflection
+from nanobot.memory.db import add_message as db_add_message, add_reflection
 from nanobot.session.manager import Session, SessionManager
 
 
@@ -357,7 +357,16 @@ class AgentLoop:
         session.add_message("user", msg.content)
         session.add_message("assistant", final_content)
         self.sessions.save(session)
-        
+
+        # Duplicate to SQLite for crystallize
+        if msg.channel and msg.chat_id:
+            sqlite_chat_id = f"{msg.channel}_{msg.chat_id}"
+            try:
+                db_add_message(chat_id=sqlite_chat_id, role="user", message=msg.content)
+                db_add_message(chat_id=sqlite_chat_id, role="assistant", message=final_content)
+            except Exception as e:
+                logger.warning(f"Failed to save messages to SQLite: {e}")
+
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
@@ -417,13 +426,21 @@ class AgentLoop:
 
         elif user_response in ["no", "n", "нет", "н"]:
             # User declined
-            session.add_message(
-                "user",
-                pending.get("original_user_message", "User declined"),
-            )
-            session.add_message("assistant", "Tool execution cancelled by user.")
+            original_msg = pending.get("original_user_message", "User declined")
+            decline_response = "Tool execution cancelled by user."
+            session.add_message("user", original_msg)
+            session.add_message("assistant", decline_response)
             session.pending_confirmation = None
             self.sessions.save(session)
+
+            # Duplicate to SQLite for crystallize
+            if msg.channel and msg.chat_id:
+                sqlite_chat_id = f"{msg.channel}_{msg.chat_id}"
+                try:
+                    db_add_message(chat_id=sqlite_chat_id, role="user", message=original_msg)
+                    db_add_message(chat_id=sqlite_chat_id, role="assistant", message=decline_response)
+                except Exception as e:
+                    logger.warning(f"Failed to save messages to SQLite: {e}")
 
             await self.bus.publish_outbound(OutboundMessage(
                 channel=msg.channel,
@@ -557,6 +574,15 @@ class AgentLoop:
         session.add_message("assistant", final_content)
         self.sessions.save(session)
 
+        # Duplicate to SQLite for crystallize
+        if msg.channel and msg.chat_id:
+            sqlite_chat_id = f"{msg.channel}_{msg.chat_id}"
+            try:
+                db_add_message(chat_id=sqlite_chat_id, role="user", message=original_user_message)
+                db_add_message(chat_id=sqlite_chat_id, role="assistant", message=final_content)
+            except Exception as e:
+                logger.warning(f"Failed to save messages to SQLite: {e}")
+
         return OutboundMessage(
             channel=msg.channel,
             chat_id=msg.chat_id,
@@ -683,10 +709,20 @@ class AgentLoop:
             final_content = "Background task completed."
         
         # Save to session (mark as system message in history)
-        session.add_message("user", f"[System: {msg.sender_id}] {msg.content}")
+        system_user_msg = f"[System: {msg.sender_id}] {msg.content}"
+        session.add_message("user", system_user_msg)
         session.add_message("assistant", final_content)
         self.sessions.save(session)
-        
+
+        # Duplicate to SQLite for crystallize
+        if origin_channel and origin_chat_id:
+            sqlite_chat_id = f"{origin_channel}_{origin_chat_id}"
+            try:
+                db_add_message(chat_id=sqlite_chat_id, role="user", message=system_user_msg)
+                db_add_message(chat_id=sqlite_chat_id, role="assistant", message=final_content)
+            except Exception as e:
+                logger.warning(f"Failed to save messages to SQLite: {e}")
+
         return OutboundMessage(
             channel=origin_channel,
             chat_id=origin_chat_id,
