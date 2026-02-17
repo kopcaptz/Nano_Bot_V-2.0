@@ -70,18 +70,6 @@ def init_db() -> None:
         )
         conn.execute(
             """
-            CREATE TABLE IF NOT EXISTS conversations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id TEXT NOT NULL,
-                role TEXT NOT NULL,
-                message TEXT NOT NULL,
-                timestamp TEXT NOT NULL
-            )
-            """
-        )
-
-        conn.execute(
-            """
             CREATE TABLE IF NOT EXISTS token_usage (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 date TEXT NOT NULL,
@@ -116,9 +104,6 @@ def init_db() -> None:
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_journal_date ON journal(date)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_conversations_chat_id ON conversations(chat_id)"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_token_usage_date ON token_usage(date)"
@@ -380,62 +365,6 @@ def get_journal(date: str) -> list[dict[str, Any]]:
             (date,),
         ).fetchall()
     return [_row_to_dict(row) for row in rows]
-
-
-def add_message(chat_id: str, role: str, message: str) -> None:
-    """Сохраняет сообщение диалога."""
-    init_db()
-    with _connect() as conn:
-        conn.execute(
-            """
-            INSERT INTO conversations (chat_id, role, message, timestamp)
-            VALUES (?, ?, ?, ?)
-            """,
-            (chat_id, role, message, _now_iso()),
-        )
-        conn.commit()
-
-
-def get_conversation(chat_id: str, limit: int = 50) -> list[dict[str, Any]]:
-    """Возвращает последние сообщения чата в хронологическом порядке."""
-    init_db()
-    safe_limit = max(1, int(limit))
-    with _connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, chat_id, role, message, timestamp
-            FROM conversations
-            WHERE chat_id = ?
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (chat_id, safe_limit),
-        ).fetchall()
-
-    # Из БД выбраны последние N сообщений, разворачиваем в хронологию.
-    return [_row_to_dict(row) for row in reversed(rows)]
-
-
-def get_recent_conversations(limit: int = 100) -> list[dict[str, Any]]:
-    """
-    Возвращает последние N сообщений из conversations в хронологическом порядке.
-
-    Используется для кристаллизации памяти.
-    """
-    init_db()
-    safe_limit = max(1, int(limit))
-    with _connect() as conn:
-        rows = conn.execute(
-            """
-            SELECT id, chat_id, role, message, timestamp
-            FROM conversations
-            ORDER BY id DESC
-            LIMIT ?
-            """,
-            (safe_limit,),
-        ).fetchall()
-
-    return [_row_to_dict(row) for row in reversed(rows)]
 
 
 # ============== REFLECTIONS ==============

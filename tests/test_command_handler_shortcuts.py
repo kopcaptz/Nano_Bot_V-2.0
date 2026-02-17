@@ -15,7 +15,6 @@ if str(SRC_DIR) not in sys.path:
 
 from core.event_bus import EventBus  # noqa: E402
 from core.handler import CommandHandler  # noqa: E402
-from core.memory import CrystalMemory  # noqa: E402
 
 
 class DummyLLMRouter:
@@ -32,12 +31,29 @@ class DummyLLMRouter:
         return "llm-result"
 
 
+class _SimpleMemory:
+    """Minimal in-memory chat history compatible with CommandHandler."""
+
+    def __init__(self) -> None:
+        self._messages: dict[int, list[dict[str, str]]] = {}
+        self.max_messages_per_chat = 200
+
+    def add_message(self, chat_id: int, role: str, content: str) -> None:
+        self._messages.setdefault(chat_id, []).append({"role": role, "content": content})
+
+    def get_history(self, chat_id: int) -> list[dict]:
+        return [dict(m) for m in self._messages.get(chat_id, [])]
+
+    def clear_history(self, chat_id: int) -> None:
+        self._messages.pop(chat_id, None)
+
+
 class CommandHandlerShortcutsTests(unittest.IsolatedAsyncioTestCase):
     """Covers slash-command shortcut behavior and persistence rules."""
 
     async def asyncSetUp(self) -> None:
         self.event_bus = EventBus()
-        self.memory = CrystalMemory()
+        self.memory = _SimpleMemory()
         self.llm = DummyLLMRouter()
         self.handler = CommandHandler(self.event_bus, self.llm, self.memory)
         await self.handler.initialize()
