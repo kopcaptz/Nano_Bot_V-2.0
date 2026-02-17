@@ -65,11 +65,44 @@ class NotificationManager:
             self._bot = Bot(token=self.bot_token)
         return self._bot
 
+    async def send_system_alert(
+        self,
+        chat_id: str | int,
+        message: str,
+        level: str = "info",
+    ) -> bool:
+        """
+        Send a system alert with auto-priority from level.
+
+        Args:
+            chat_id: Telegram chat ID.
+            message: Alert message.
+            level: info→normal, warning→high, error/critical→urgent.
+
+        Returns:
+            True if sent successfully.
+        """
+        level_map = {
+            "info": (Priority.NORMAL, "ℹ️ "),
+            "success": (Priority.NORMAL, "✅ "),
+            "warning": (Priority.HIGH, "⚠️ "),
+            "warn": (Priority.HIGH, "⚠️ "),
+            "error": (Priority.URGENT, "🚨 "),
+            "critical": (Priority.URGENT, "🚨 "),
+            "urgent": (Priority.URGENT, "🚨 "),
+        }
+        priority, prefix = level_map.get(level.lower(), (Priority.NORMAL, ""))
+        full_message = f"{prefix}{message}" if prefix else message
+        return await self.send_notification(
+            chat_id, full_message, priority, prefix_override=""
+        )
+
     async def send_notification(
         self,
         chat_id: str | int,
         message: str,
         priority: str | Priority = "normal",
+        prefix_override: str | None = None,
     ) -> bool:
         """
         Send an immediate notification to the given chat_id.
@@ -78,6 +111,7 @@ class NotificationManager:
             chat_id: Telegram chat ID (user or group).
             message: Text message to send.
             priority: One of "low", "normal", "high", "urgent" or Priority enum.
+            prefix_override: If set, use instead of auto-prefix (e.g. when message already has emoji).
 
         Returns:
             True if sent successfully, False otherwise.
@@ -88,7 +122,10 @@ class NotificationManager:
             except ValueError:
                 priority = Priority.NORMAL
 
-        prefix = _priority_prefix(priority)
+        if prefix_override is not None:
+            prefix = prefix_override
+        else:
+            prefix = _priority_prefix(priority)
         full_message = f"{prefix}{message}" if prefix else message
 
         try:

@@ -328,6 +328,7 @@ def gateway(
         console.print("[green]✓[/green] Push notifications enabled")
     
     # Create agent with cron service and notifications
+    default_chat_id = notify_config.default_chat_id or None
     agent = AgentLoop(
         bus=bus,
         provider=provider,
@@ -338,6 +339,7 @@ def gateway(
         exec_config=config.tools.exec,
         cron_service=cron,
         notification_manager=notification_manager,
+        notification_default_chat_id=default_chat_id,
         restrict_to_workspace=config.tools.restrict_to_workspace,
         session_manager=session_manager,
     )

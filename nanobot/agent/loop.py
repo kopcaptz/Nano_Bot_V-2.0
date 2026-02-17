@@ -52,11 +52,13 @@ class AgentLoop:
         exec_config: "ExecToolConfig | None" = None,
         cron_service: "CronService | None" = None,
         notification_manager: "NotificationManager | None" = None,
+        notification_default_chat_id: str | int | None = None,
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
     ):
         from nanobot.config.schema import ExecToolConfig
         from nanobot.cron.service import CronService
+        from nanobot.notifications.triggers import EventTrigger
         self.bus = bus
         self.provider = provider
         self.workspace = workspace
@@ -66,6 +68,10 @@ class AgentLoop:
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.notification_manager = notification_manager
+        self.event_trigger = EventTrigger(
+            notification_manager=notification_manager,
+            default_chat_id=notification_default_chat_id,
+        )
         self.restrict_to_workspace = restrict_to_workspace
         
         self.context = ContextBuilder(workspace)
@@ -155,7 +161,11 @@ class AgentLoop:
                         await self.bus.publish_outbound(response)
                 except Exception as e:
                     logger.error(f"Error processing message: {e}")
-                    # Send error response
+                    await self.event_trigger.on_error(
+                        e,
+                        context={"channel": msg.channel},
+                        chat_id=msg.chat_id if msg.channel == "telegram" else None,
+                    )
                     await self.bus.publish_outbound(OutboundMessage(
                         channel=msg.channel,
                         chat_id=msg.chat_id,
@@ -304,6 +314,11 @@ class AgentLoop:
                     # Reflection on tool error (insight logged only, LLM gets error via tool_result)
                     if result.startswith("Error:"):
                         logger.warning(f"Tool {tool_name} failed: {result[:200]}")
+                        await self.event_trigger.on_error(
+                            result,
+                            context={"tool": tool_name},
+                            chat_id=msg.chat_id if msg.channel == "telegram" else None,
+                        )
                         try:
                             insight = await self.reflection.analyze_trajectory(
                                 messages=messages,
@@ -321,6 +336,11 @@ class AgentLoop:
                                 )
                         except Exception as e:
                             logger.warning(f"Reflection failed: {e}")
+                    else:
+                        await self.event_trigger.on_task_complete(
+                            tool_name,
+                            chat_id=msg.chat_id if msg.channel == "telegram" else None,
+                        )
 
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_name, result
@@ -332,6 +352,12 @@ class AgentLoop:
         
         if final_content is None:
             final_content = "I've completed processing but have no response to give."
+            if iteration >= self.max_iterations:
+                await self.event_trigger.on_system_alert(
+                    f"Достигнут лимит итераций ({self.max_iterations}), обработка прервана",
+                    level="warning",
+                    chat_id=msg.chat_id if msg.channel == "telegram" else None,
+                )
 
         # Анализ: стоит ли предложить создание навыка?
         if iteration >= 5 and final_content:
@@ -385,6 +411,11 @@ class AgentLoop:
             # Reflection on tool error
             if result.startswith("Error:"):
                 logger.warning(f"Tool {tool_name} failed: {result[:200]}")
+                await self.event_trigger.on_error(
+                    result,
+                    context={"tool": tool_name},
+                    chat_id=msg.chat_id if msg.channel == "telegram" else None,
+                )
                 try:
                     insight = await self.reflection.analyze_trajectory(
                         messages=pending["messages"],
@@ -402,6 +433,11 @@ class AgentLoop:
                         )
                 except Exception as e:
                     logger.warning(f"Reflection failed: {e}")
+            else:
+                await self.event_trigger.on_task_complete(
+                    tool_name,
+                    chat_id=msg.chat_id if msg.channel == "telegram" else None,
+                )
 
             messages = self.context.add_tool_result(
                 pending["messages"],
@@ -530,6 +566,11 @@ class AgentLoop:
                     # Reflection on tool error
                     if result.startswith("Error:"):
                         logger.warning(f"Tool {tool_name} failed: {result[:200]}")
+                        await self.event_trigger.on_error(
+                            result,
+                            context={"tool": tool_name},
+                            chat_id=msg.chat_id if msg.channel == "telegram" else None,
+                        )
                         try:
                             insight = await self.reflection.analyze_trajectory(
                                 messages=messages,
@@ -547,6 +588,11 @@ class AgentLoop:
                                 )
                         except Exception as e:
                             logger.warning(f"Reflection failed: {e}")
+                    else:
+                        await self.event_trigger.on_task_complete(
+                            tool_name,
+                            chat_id=msg.chat_id if msg.channel == "telegram" else None,
+                        )
 
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_name, result
@@ -656,6 +702,11 @@ class AgentLoop:
                     # Reflection on tool error
                     if result.startswith("Error:"):
                         logger.warning(f"Tool {tool_call.name} failed: {result[:200]}")
+                        await self.event_trigger.on_error(
+                            result,
+                            context={"tool": tool_call.name},
+                            chat_id=origin_chat_id if origin_channel == "telegram" else None,
+                        )
                         try:
                             insight = await self.reflection.analyze_trajectory(
                                 messages=messages,
@@ -676,6 +727,11 @@ class AgentLoop:
                                 )
                         except Exception as e:
                             logger.warning(f"Reflection failed: {e}")
+                    else:
+                        await self.event_trigger.on_task_complete(
+                            tool_call.name,
+                            chat_id=origin_chat_id if origin_channel == "telegram" else None,
+                        )
 
                     messages = self.context.add_tool_result(
                         messages, tool_call.id, tool_call.name, result
