@@ -172,7 +172,7 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
                     facts_text = "\n".join(
                         f"- [{f.get('domain', 'general')}] {f.get('category', '?')} → {f.get('key', '?')}: {f.get('value', '?')}"
                         for f in relevant_facts
-                        if f.get("distance", 1.0) < 0.7
+                        if f.get("distance", 1.0) < 0.5
                     )
                     if facts_text:
                         messages.append({

@@ -36,7 +36,8 @@ def _get_embedding_function() -> Any | None:
     """
     Возвращает embedding-функцию для коллекции.
 
-    Предпочитаем all-MiniLM-L6-v2 (качественный и легкий вариант).
+    Предпочитаем paraphrase-multilingual-MiniLM-L12-v2 для лучшей
+    поддержки русского и других языков (384d, как и all-MiniLM-L6-v2).
     Если модель/зависимости недоступны, Chroma использует встроенный default.
     """
     global _EMBEDDING_FN, _EMBEDDING_READY
@@ -50,7 +51,7 @@ def _get_embedding_function() -> Any | None:
         )
 
         _EMBEDDING_FN = SentenceTransformerEmbeddingFunction(
-            model_name="all-MiniLM-L6-v2"
+            model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
         )
     except Exception:
         _EMBEDDING_FN = None
