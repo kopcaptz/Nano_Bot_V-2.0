@@ -25,40 +25,36 @@ class ContextBuilder:
         self.workspace = workspace
         self.memory = MemoryStore(workspace)
         self.skills = SkillsLoader(workspace)
+        self._static_prompt_cache: str | None = None
     
     def build_system_prompt(self, skill_names: list[str] | None = None) -> str:
         """
         Build the system prompt from bootstrap files, memory, and skills.
-        
+
+        Static parts (Identity + Bootstrap) are cached after first call.
+        Dynamic parts (Memory, Skills) are assembled fresh each time.
+
         Args:
             skill_names: Optional list of skills to include.
-        
+
         Returns:
             Complete system prompt.
         """
-        parts = []
-        
-        # Core identity
-        parts.append(self._get_identity())
-        
-        # Bootstrap files
-        bootstrap = self._load_bootstrap_files()
-        if bootstrap:
-            parts.append(bootstrap)
-        
-        # Memory context
+        parts = [self._get_static_prompt()]
+
+        # Memory context (dynamic — changes between calls)
         memory = self.memory.get_memory_context()
         if memory:
             parts.append(f"# Memory\n\n{memory}")
-        
-        # Skills - progressive loading
+
+        # Skills - progressive loading (dynamic — skills may be added/removed)
         # 1. Always-loaded skills: include full content
         always_skills = self.skills.get_always_skills()
         if always_skills:
             always_content = self.skills.load_skills_for_context(always_skills)
             if always_content:
                 parts.append(f"# Active Skills\n\n{always_content}")
-        
+
         # 2. Available skills: only show summary (agent uses read_file to load)
         skills_summary = self.skills.build_skills_summary()
         if skills_summary:
@@ -68,8 +64,25 @@ The following skills extend your capabilities. To use a skill, read its SKILL.md
 Skills with available="false" need dependencies installed first - you can try installing them with apt/brew.
 
 {skills_summary}""")
-        
+
         return "\n\n---\n\n".join(parts)
+
+    def _get_static_prompt(self) -> str:
+        """Return cached static prompt (Identity + Bootstrap files).
+
+        Built once on first call, then served from cache.
+        Avoids re-reading bootstrap .md files from disk on every request.
+        """
+        if self._static_prompt_cache is not None:
+            return self._static_prompt_cache
+
+        parts = [self._get_identity()]
+        bootstrap = self._load_bootstrap_files()
+        if bootstrap:
+            parts.append(bootstrap)
+
+        self._static_prompt_cache = "\n\n---\n\n".join(parts)
+        return self._static_prompt_cache
     
     def _get_identity(self) -> str:
         """Get the core identity section."""
