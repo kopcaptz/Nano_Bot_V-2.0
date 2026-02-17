@@ -491,6 +491,97 @@ def agent(
 
 
 # ============================================================================
+# Memory Crystallization
+# ============================================================================
+
+
+@app.command()
+def crystallize(
+    messages_limit: int = typer.Option(
+        100,
+        "--messages-limit",
+        help="How many recent conversation messages to analyze",
+    ),
+    sessions_limit: int = typer.Option(
+        20,
+        "--sessions-limit",
+        help="How many recent sessions to load from JSONL",
+    ),
+    model: str = typer.Option(
+        "gpt-4o-mini",
+        "--model",
+        help="Model used for extracting structured facts",
+    ),
+    schedule_daily: bool = typer.Option(
+        False,
+        "--schedule-daily/--no-schedule-daily",
+        help="Also create a daily cron job for crystallization",
+    ),
+    daily_cron: str = typer.Option(
+        "0 3 * * *",
+        "--daily-cron",
+        help="Cron expression for daily crystallization job",
+    ),
+):
+    """Extract structured facts from recent conversations (JSONL sessions)."""
+    from nanobot.config.loader import get_data_dir, load_config
+    from nanobot.cron.service import CronService
+    from nanobot.cron.types import CronSchedule
+    from nanobot.memory.crystallize import crystallize_memories
+    from nanobot.session.manager import SessionManager
+
+    config = load_config()
+    provider = _make_provider(config)
+    session_manager = SessionManager(config.workspace_path)
+
+    safe_limit = max(1, messages_limit)
+    safe_sessions = max(1, sessions_limit)
+    console.print(
+        f"{__logo__} Running memory crystallization "
+        f"(sessions={safe_sessions}, messages={safe_limit}, model={model})..."
+    )
+
+    result = asyncio.run(
+        crystallize_memories(
+            provider=provider,
+            session_manager=session_manager,
+            sessions_limit=safe_sessions,
+            messages_limit=safe_limit,
+            model=model,
+        )
+    )
+
+    console.print("[green]✓[/green] Crystallization completed")
+    console.print(f"  Processed messages: {result.get('processed_messages', 0)}")
+    console.print(f"  Extracted facts: {result.get('extracted_facts', 0)}")
+    console.print(f"  Saved facts: {result.get('saved_facts', 0)}")
+
+    if schedule_daily:
+        store_path = get_data_dir() / "cron" / "jobs.json"
+        cron_service = CronService(store_path)
+        existing = [
+            job for job in cron_service.list_jobs(include_disabled=True)
+            if job.name == "memory-crystallize-daily"
+        ]
+
+        if existing:
+            ids = ", ".join(job.id for job in existing)
+            console.print(
+                f"[yellow]Daily crystallize job already exists[/yellow] (ids: {ids})"
+            )
+        else:
+            job = cron_service.add_job(
+                name="memory-crystallize-daily",
+                schedule=CronSchedule(kind="cron", expr=daily_cron),
+                message=f"/crystallize --messages-limit {safe_limit} --sessions-limit {safe_sessions} --model {model}",
+            )
+            console.print(
+                f"[green]✓[/green] Scheduled daily crystallization job "
+                f"({job.id}) with cron '{daily_cron}'"
+            )
+
+
+# ============================================================================
 # Channel Commands
 # ============================================================================
 

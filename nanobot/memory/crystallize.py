@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from loguru import logger
 
-from nanobot.memory.db import add_fact, get_recent_conversations
+from nanobot.memory.db import add_fact
 from nanobot.providers.base import LLMProvider
+
+if TYPE_CHECKING:
+    from nanobot.session.manager import SessionManager
 
 
 CRYSTALLIZE_PROMPT = """Analyze the following dialogues. Extract key facts and user preferences, structuring them hierarchically.
@@ -122,23 +125,71 @@ def _normalize_facts(raw_facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return normalized
 
 
+def _load_messages_from_sessions(
+    session_manager: "SessionManager",
+    sessions_limit: int = 20,
+    messages_limit: int = 100,
+) -> list[dict[str, Any]]:
+    """
+    Загружает сообщения из нескольких последних сессий (JSONL-файлов).
+
+    Args:
+        session_manager: Экземпляр SessionManager.
+        sessions_limit: Сколько последних сессий загружать (по умолчанию 20).
+        messages_limit: Максимум сообщений в итоговом массиве.
+
+    Returns:
+        Список сообщений в формате {chat_id, role, timestamp, message}.
+    """
+    rows: list[dict[str, Any]] = []
+    sessions = session_manager.list_sessions()[:sessions_limit]
+
+    for info in sessions:
+        key = info.get("key", "")
+        if not key:
+            continue
+        session = session_manager.get_or_create(key)
+        for msg in session.messages:
+            rows.append(
+                {
+                    "chat_id": key,
+                    "role": str(msg.get("role", "")),
+                    "timestamp": str(msg.get("timestamp", "")),
+                    "message": str(msg.get("content", "")),
+                }
+            )
+
+    # Сортируем по timestamp (хронологически) и обрезаем до limit
+    rows.sort(key=lambda r: r.get("timestamp", ""))
+    return rows[-messages_limit:]
+
+
 async def crystallize_memories(
     provider: LLMProvider,
+    session_manager: "SessionManager",
+    *,
+    sessions_limit: int = 20,
     messages_limit: int = 100,
     model: str = "gpt-4o-mini",
 ) -> dict[str, Any]:
     """
-    Кристаллизует память из последних диалогов и сохраняет факты в SQLite.
+    Кристаллизует память из последних диалогов (JSONL-сессий) и сохраняет факты в SQLite.
 
     Args:
         provider: LLM-провайдер nanobot.
+        session_manager: Экземпляр SessionManager для доступа к диалогам в JSONL.
+        sessions_limit: Сколько последних сессий загружать (по умолчанию 20).
         messages_limit: Сколько последних сообщений анализировать.
         model: Модель для извлечения фактов (по умолчанию дешевая).
 
     Returns:
         Сводка выполнения (сколько сообщений обработано, сколько фактов сохранено и т.д.).
     """
-    rows = get_recent_conversations(limit=messages_limit)
+    rows = _load_messages_from_sessions(
+        session_manager,
+        sessions_limit=sessions_limit,
+        messages_limit=messages_limit,
+    )
     if not rows:
         return {
             "processed_messages": 0,
