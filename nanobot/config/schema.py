@@ -154,6 +154,13 @@ class ChannelsConfig(BaseModel):
     qq: QQConfig = Field(default_factory=QQConfig)
 
 
+class NotificationConfig(BaseModel):
+    """Push notification configuration (Telegram)."""
+    enabled: bool = False
+    bot_token: str = ""  # Telegram bot token from @BotFather
+    default_chat_id: str = ""  # Default chat_id for notifications when not from Telegram
+
+
 class AgentDefaults(BaseModel):
     """Default agent configuration."""
     workspace: str = "~/.nanobot/workspace"
@@ -161,6 +168,7 @@ class AgentDefaults(BaseModel):
     max_tokens: int = 8192
     temperature: float = 0.7
     max_tool_iterations: int = 20
+    notifications: NotificationConfig = Field(default_factory=NotificationConfig)
 
 
 class AgentsConfig(BaseModel):

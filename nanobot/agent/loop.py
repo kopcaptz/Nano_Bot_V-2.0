@@ -51,6 +51,7 @@ class AgentLoop:
         brave_api_key: str | None = None,
         exec_config: "ExecToolConfig | None" = None,
         cron_service: "CronService | None" = None,
+        notification_manager: "NotificationManager | None" = None,
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
     ):
@@ -64,6 +65,7 @@ class AgentLoop:
         self.brave_api_key = brave_api_key
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
+        self.notification_manager = notification_manager
         self.restrict_to_workspace = restrict_to_workspace
         
         self.context = ContextBuilder(workspace)
@@ -126,9 +128,12 @@ class AgentLoop:
         spawn_tool = SpawnTool(manager=self.subagents)
         self.tools.register(spawn_tool)
         
-        # Cron tool (for scheduling)
+        # Cron tool (for scheduling + reminders with push)
         if self.cron_service:
-            self.tools.register(CronTool(self.cron_service))
+            self.tools.register(CronTool(
+                self.cron_service,
+                notification_manager=self.notification_manager,
+            ))
     
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
