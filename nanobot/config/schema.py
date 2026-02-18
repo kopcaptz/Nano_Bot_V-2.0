@@ -1,7 +1,8 @@
 """Configuration schema using Pydantic."""
 
+import os
 from pathlib import Path
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -43,6 +44,8 @@ class DiscordConfig(BaseModel):
     """Discord channel configuration."""
     enabled: bool = False
     token: str = ""  # Bot token from Discord Developer Portal
+    application_id: str = ""  # Application ID from Developer Portal (OAuth2 page)
+    guild_id: str = ""  # Server ID for instant slash command sync (optional; empty = global sync)
     allow_from: list[str] = Field(default_factory=list)  # Allowed user IDs
     gateway_url: str = "wss://gateway.discord.gg/?v=10&encoding=json"
     intents: int = 37377  # GUILDS + GUILD_MESSAGES + DIRECT_MESSAGES + MESSAGE_CONTENT
@@ -144,6 +147,21 @@ class QQConfig(BaseModel):
 
 class ChannelsConfig(BaseModel):
     """Configuration for chat channels."""
+
+    @model_validator(mode="after")
+    def _apply_discord_env(self) -> "ChannelsConfig":
+        """Populate discord config from env (DISCORD_TOKEN, DISCORD_APPLICATION_ID, DISCORD_GUILD_ID)."""
+        env_token = os.environ.get("DISCORD_TOKEN", "").strip()
+        if env_token and not self.discord.token:
+            self.discord.token = env_token
+        env_app_id = os.environ.get("DISCORD_APPLICATION_ID", "").strip()
+        if env_app_id and not self.discord.application_id:
+            self.discord.application_id = env_app_id
+        env_guild_id = os.environ.get("DISCORD_GUILD_ID", "").strip()
+        if env_guild_id and not self.discord.guild_id:
+            self.discord.guild_id = env_guild_id
+        return self
+
     whatsapp: WhatsAppConfig = Field(default_factory=WhatsAppConfig)
     telegram: TelegramConfig = Field(default_factory=TelegramConfig)
     discord: DiscordConfig = Field(default_factory=DiscordConfig)

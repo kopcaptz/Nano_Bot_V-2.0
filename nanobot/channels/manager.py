@@ -63,13 +63,12 @@ class ChannelManager:
             except ImportError as e:
                 logger.warning(f"WhatsApp channel not available: {e}")
 
-        # Discord channel
-        if self.config.channels.discord.enabled:
+        # Discord channel (auto-enable when token is set)
+        dc = self.config.channels.discord
+        if dc.enabled or dc.token:
             try:
                 from nanobot.channels.discord import DiscordChannel
-                self.channels["discord"] = DiscordChannel(
-                    self.config.channels.discord, self.bus
-                )
+                self.channels["discord"] = DiscordChannel(dc, self.bus)
                 logger.info("Discord channel enabled")
             except ImportError as e:
                 logger.warning(f"Discord channel not available: {e}")

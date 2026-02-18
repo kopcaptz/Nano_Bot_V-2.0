@@ -1,4 +1,4 @@
-"""MCP tools: bridge to Model Context Protocol via manus-mcp-cli."""
+"""MCP tools: bridge to Model Context Protocol via @wong2/mcp-cli."""
 
 import asyncio
 import json
@@ -10,9 +10,9 @@ from nanobot.agent.tools.policy import ToolPolicy
 
 
 class MCPCallTool(Tool):
-    """Call an MCP tool via manus-mcp-cli."""
+    """Call an MCP tool via @wong2/mcp-cli."""
 
-    def __init__(self, timeout: int = 20):
+    def __init__(self, timeout: int = 30):
         self.timeout = timeout
 
     @property
@@ -24,7 +24,7 @@ class MCPCallTool(Tool):
         return (
             "Call a tool from an MCP (Model Context Protocol) server. "
             "Use when you need: web browsing, Google search, code execution in sandbox, "
-            "or other MCP-server capabilities. Requires manus-mcp-cli installed."
+            "or other MCP-server capabilities. Requires @wong2/mcp-cli installed."
         )
 
     @property
@@ -34,7 +34,7 @@ class MCPCallTool(Tool):
             "properties": {
                 "server": {
                     "type": "string",
-                    "description": "MCP server name (e.g. manus-mcp, cursor-ide-browser)",
+                    "description": "MCP server name (e.g. gmail, sheets, drive)",
                 },
                 "tool_name": {
                     "type": "string",
@@ -43,6 +43,10 @@ class MCPCallTool(Tool):
                 "arguments": {
                     "type": "object",
                     "description": "Arguments for the tool (JSON object). Empty {} if none.",
+                },
+                "config_path": {
+                    "type": "string",
+                    "description": "Optional path to MCP config file",
                 },
             },
             "required": ["server", "tool_name"],
@@ -57,13 +61,26 @@ class MCPCallTool(Tool):
         server: str,
         tool_name: str,
         arguments: dict[str, Any] | None = None,
+        config_path: str | None = None,
         **kwargs: Any,
     ) -> str:
-        input_json = json.dumps(arguments or {}, ensure_ascii=False)
-        cmd = (
-            f"manus-mcp-cli tool call {shlex.quote(tool_name)} "
-            f"--server {shlex.quote(server)} --input {shlex.quote(input_json)}"
-        )
+        args_json = json.dumps(arguments or {}, ensure_ascii=False)
+        
+        # Build command: npx @wong2/mcp-cli call-tool server:tool_name --args '{...}'
+        cmd_parts = ["npx", "@wong2/mcp-cli"]
+        
+        if config_path:
+            cmd_parts.extend(["--config", shlex.quote(config_path)])
+            
+        cmd_parts.extend([
+            "call-tool", 
+            f"{server}:{tool_name}",
+            "--args", 
+            shlex.quote(args_json)
+        ])
+        
+        cmd = " ".join(cmd_parts)
+        
         try:
             proc = await asyncio.create_subprocess_shell(
                 cmd,
@@ -76,12 +93,12 @@ class MCPCallTool(Tool):
             )
         except asyncio.TimeoutError:
             return (
-                f"Error: manus-mcp-cli timed out after {self.timeout} seconds."
+                f"Error: MCP call timed out after {self.timeout} seconds."
             )
         except FileNotFoundError:
             return (
-                "Error: manus-mcp-cli not found. "
-                "Install: npm i -g manus-mcp-cli (or npx manus-mcp-cli)"
+                "Error: @wong2/mcp-cli not found. "
+                "Install: npm i -g @wong2/mcp-cli"
             )
 
         if proc.returncode != 0:

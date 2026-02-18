@@ -131,6 +131,7 @@ class TelegramChannel(BaseChannel):
     # Commands registered with Telegram's command menu
     BOT_COMMANDS = [
         BotCommand("start", "Start the bot"),
+        BotCommand("hide", "Hide keyboard panel"),
         BotCommand("reset", "Reset conversation history"),
         BotCommand("help", "Show available commands"),
     ]
@@ -162,6 +163,7 @@ class TelegramChannel(BaseChannel):
     CMD_EXEC_PREFIX = "cmd_exec:"
     CMD_BACK = "cmd_back"
     CMD_CANCEL = "cmd_cancel"
+    CMD_HIDE = "cmd_hide"
 
     # Confirmation callback prefix (cfm:yes:id, cfm:no:id, cfm:later:id)
     CONFIRM_PREFIX = "cfm:"
@@ -276,6 +278,7 @@ class TelegramChannel(BaseChannel):
         
         # Add command handlers
         self._app.add_handler(CommandHandler("start", self._on_start))
+        self._app.add_handler(CommandHandler("hide", self._on_hide))
         self._app.add_handler(CommandHandler("reset", self._on_reset))
         self._app.add_handler(CommandHandler("help", self._on_help))
         self._app.add_handler(CallbackQueryHandler(self._on_callback_query))
@@ -497,6 +500,7 @@ class TelegramChannel(BaseChannel):
                 InlineKeyboardButton("🔧 Git", callback_data=self.CMD_MENU_GIT),
                 InlineKeyboardButton("🤖 Навыки", callback_data=self.CMD_MENU_SKILLS),
             ])
+        rows.append([InlineKeyboardButton("🫥 Скрыть меню", callback_data=self.CMD_HIDE)])
         return InlineKeyboardMarkup(rows)
 
     def _build_commands_keyboard(self) -> InlineKeyboardMarkup:
@@ -512,6 +516,7 @@ class TelegramChannel(BaseChannel):
                     InlineKeyboardButton("🤖 Навыки", callback_data=self.CMD_MENU_SKILLS),
                 ],
                 [InlineKeyboardButton("⬅️ Назад", callback_data=self.CMD_BACK)],
+                [InlineKeyboardButton("🫥 Скрыть меню", callback_data=self.CMD_HIDE)],
             ]
         )
 
@@ -523,6 +528,7 @@ class TelegramChannel(BaseChannel):
                 [InlineKeyboardButton(label, callback_data=f"{self.CMD_SELECT_PREFIX}{command_id}")]
             )
         command_rows.append([InlineKeyboardButton("⬅️ Назад", callback_data=self.CMD_BACK)])
+        command_rows.append([InlineKeyboardButton("🫥 Скрыть меню", callback_data=self.CMD_HIDE)])
         return InlineKeyboardMarkup(command_rows)
 
     def _build_confirm_keyboard(self, command: str) -> InlineKeyboardMarkup:
@@ -534,6 +540,7 @@ class TelegramChannel(BaseChannel):
                     InlineKeyboardButton("⬅️ Назад", callback_data=self.CMD_BACK),
                     InlineKeyboardButton("❌ Отмена", callback_data=self.CMD_CANCEL),
                 ],
+                [InlineKeyboardButton("🫥 Скрыть меню", callback_data=self.CMD_HIDE)],
             ]
         )
 
@@ -565,6 +572,7 @@ class TelegramChannel(BaseChannel):
         ("📊 Статус", "статус проекта"),
         ("⚙️ Настройки", "помощь"),
     ]
+    HIDE_KEYBOARD_LABEL = "🫥 Скрыть панель"
 
     def _resolve_quick_reply(self, content: str) -> str:
         """If content matches a quick reply button, return mapped content; else return original."""
@@ -579,6 +587,7 @@ class TelegramChannel(BaseChannel):
         if getattr(self.config, "ux_level", "advanced") == "minimal":
             return None
         keyboard = [[KeyboardButton(label)] for label, _ in self.QUICK_REPLIES]
+        keyboard.append([KeyboardButton(self.HIDE_KEYBOARD_LABEL)])
         return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
 
     def _build_command_hint(self, command: str) -> str:
@@ -827,6 +836,10 @@ class TelegramChannel(BaseChannel):
                     await query.edit_message_text("Истекло время или действие не найдено.")
             return
 
+        if callback_data == self.CMD_HIDE:
+            await query.edit_message_reply_markup(reply_markup=None)
+            return
+
         if callback_data == self.CMD_MENU_MAIN:
             logger.info("telegram_callback: menu main user_id=%s chat_id=%s", user.id, chat_id)
             self._set_menu_state(context, self.MENU_STATE_MAIN, push_previous=True)
@@ -961,6 +974,15 @@ class TelegramChannel(BaseChannel):
             )
             return
     
+    async def _on_hide(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Handle /hide command — remove ReplyKeyboard (persistent panel at bottom)."""
+        if not update.message:
+            return
+        await update.message.reply_text(
+            "Панель скрыта. /start — вернуть.",
+            reply_markup=ReplyKeyboardRemove(selective=False),
+        )
+
     async def _on_reset(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle /reset command — clear conversation history."""
         if not update.message or not update.effective_user:
@@ -990,6 +1012,7 @@ class TelegramChannel(BaseChannel):
         help_text = (
             "🐈 <b>nanobot commands</b>\n\n"
             "/start — Start the bot\n"
+            "/hide — Hide keyboard panel\n"
             "/reset — Reset conversation history\n"
             "/help — Show this help message\n\n"
             "Just send me a text message to chat!"
@@ -1075,6 +1098,16 @@ class TelegramChannel(BaseChannel):
                 content_parts.append(f"[{media_type}: download failed]")
         
         content = "\n".join(content_parts) if content_parts else "[empty message]"
+
+        # Handle "Hide panel" button — remove ReplyKeyboard and don't forward to agent
+        if content.strip() == self.HIDE_KEYBOARD_LABEL:
+            await message.reply_text(
+                "Панель скрыта. Отправьте /start чтобы вернуть.",
+                reply_markup=ReplyKeyboardRemove(selective=False),
+            )
+            self._stop_typing(str(chat_id))
+            return
+
         content = self._resolve_quick_reply(content)
 
         logger.debug(f"Telegram message from {sender_id}: {content[:50]}...")

@@ -6,6 +6,18 @@ from typing import Any
 
 from nanobot.config.schema import Config
 
+# Load .env from project root (next to pyproject.toml) so DISCORD_TOKEN etc. are available
+try:
+    from dotenv import load_dotenv
+    _root = Path(__file__).resolve().parents[2]
+    _env = _root / ".env"
+    if _env.exists():
+        load_dotenv(_env)
+    else:
+        load_dotenv()  # fallback: cwd
+except ImportError:
+    pass
+
 
 def get_config_path() -> Path:
     """Get the default configuration file path."""
