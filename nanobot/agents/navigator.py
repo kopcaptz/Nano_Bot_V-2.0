@@ -14,7 +14,12 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from loguru import logger
+try:
+    from loguru import logger
+except ImportError:  # pragma: no cover - fallback for minimal environments
+    import logging
+
+    logger = logging.getLogger(__name__)
 
 from nanobot.providers.base import LLMProvider
 
