@@ -87,6 +87,18 @@ cp .env.example .env
 python src/main.py
 ```
 
+## MCP Integration (опционально)
+
+Инструмент `mcp_call` позволяет вызывать инструменты MCP-серверов через `manus-mcp-cli`:
+
+- Установка: `npm i -g manus-mcp-cli` (или `npx manus-mcp-cli`)
+- Использование: агент вызывает `mcp_call` с параметрами `server`, `tool_name`, `arguments`
+- Конфиг: `MCP_SERVERS=manus-mcp` в `.env` (список серверов через запятую)
+
+Без manus-mcp-cli инструмент всё равно доступен; при вызове вернётся понятное сообщение об ошибке.
+
+---
+
 ## 7) Быстрая проверка регрессий
 
 ```bash

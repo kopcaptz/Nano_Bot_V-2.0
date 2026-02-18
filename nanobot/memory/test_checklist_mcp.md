@@ -26,8 +26,8 @@ python -m pytest tests/ -v -x -k "not smithery and not calendar"
 - [ ] ❌ SmitheryBridge **НЕ удалён** — остаётся в src/ (legacy): `src/core/smithery_bridge.py`, `src/core/handler.py`, `tests/test_smithery_bridge.py`, `test_calendar_integration.py`
 
 ### 2. MCPTool в AgentLoop
-- [ ] ❌ MCPTool **отсутствует** — нет `nanobot/agent/tools/mcp.py`
-- [ ] ❌ AgentLoop **не регистрирует** MCP инструменты (только read_file, exec, web_search и т.д.)
+- [x] ✅ MCPTool **добавлен** — `nanobot/agent/tools/mcp.py` (MCPCallTool)
+- [x] ✅ AgentLoop **регистрирует** MCP: `mcp_call` в `_register_default_tools()`
 
 ### 3. Динамическая загрузка MCP
 - [ ] ❌ В nanobot/ **нет** динамической загрузки MCP (list_tools → register)
@@ -35,7 +35,7 @@ python -m pytest tests/ -v -x -k "not smithery and not calendar"
 
 ### 4. Унификация с manus-mcp-cli
 - [ ] ❌ **Два разных CLI**: src/ использует и SmitheryBridge (smithery), и MCPAdapter (manus-mcp-cli)
-- [ ] ❌ MCPAdapter только в src/adapters/ — в nanobot/ **нет** эквивалента
+- [x] ✅ MCPCallTool в nanobot/ — эквивалент MCPAdapter, вызывает manus-mcp-cli
 
 ---
 
@@ -44,7 +44,7 @@ python -m pytest tests/ -v -x -k "not smithery and not calendar"
 | Пункт | Статус | Комментарий |
 |-------|--------|-------------|
 | 1 SmitheryBridge | ❌ legacy | nanobot чист, но src/ всё ещё содержит SmitheryBridge (handler, calendar) |
-| 2 MCPTool в AgentLoop | ❌ | MCPTool не существует, AgentLoop не знает MCP |
+| 2 MCPTool в AgentLoop | ✅ | MCPCallTool в nanobot/agent/tools/mcp.py, зарегистрирован в AgentLoop |
 | 3 Динамическая загрузка | ❌ | Только в src/ (legacy), nanobot без MCP |
 | 4 manus-mcp-cli | ❌ | Два CLI: smithery + manus-mcp-cli, не унифицировано |
 
