@@ -37,19 +37,33 @@ class Session:
         self.messages.append(msg)
         self.updated_at = datetime.now()
     
+    def get_last_user_message_info(self) -> tuple[str | None, str | None]:
+        """
+        Get timestamp and content of the last user message for mindfulness protocol.
+
+        Returns:
+            (timestamp_iso, content) or (None, None) if no user messages.
+        """
+        for m in reversed(self.messages):
+            if m.get("role") == "user":
+                ts = m.get("timestamp")
+                content = m.get("content", "")
+                return (ts if isinstance(ts, str) else None, (content or "").strip())
+        return (None, None)
+
     def get_history(self, max_messages: int = 50) -> list[dict[str, Any]]:
         """
         Get message history for LLM context.
-        
+
         Args:
             max_messages: Maximum messages to return.
-        
+
         Returns:
             List of messages in LLM format.
         """
         # Get recent messages
         recent = self.messages[-max_messages:] if len(self.messages) > max_messages else self.messages
-        
+
         # Convert to LLM format (just role and content)
         return [{"role": m["role"], "content": m["content"]} for m in recent]
     
