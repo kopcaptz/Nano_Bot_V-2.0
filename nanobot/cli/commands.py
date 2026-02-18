@@ -804,6 +804,310 @@ def cron_run(
 
 
 @app.command()
+def forensics(
+    query: str = typer.Option(
+        "помоги с задачей",
+        "--query",
+        "-q",
+        help="Query used for context/skill diagnostics",
+    ),
+    days: int = typer.Option(
+        30,
+        "--days",
+        "-d",
+        min=1,
+        max=365,
+        help="Token usage window in days",
+    ),
+):
+    """Run token-cost forensics: context, memory DB stats, and git correlation."""
+    import json
+    import sqlite3
+    import subprocess
+    from datetime import datetime
+
+    from nanobot.agent.context import ContextBuilder
+    from nanobot.config.loader import get_data_dir, load_config
+    from nanobot.memory.db import DB_PATH
+
+    config = load_config()
+    workspace = config.workspace_path
+
+    def _estimate_tokens(text: str) -> int:
+        return max(0, len(text) // 4)
+
+    def _print_size_table(title: str, rows: list[tuple[str, str]]) -> None:
+        table = Table(title=title)
+        table.add_column("Component", style="cyan")
+        table.add_column("Size", style="yellow")
+        for comp, val in rows:
+            table.add_row(comp, val)
+        console.print(table)
+
+    console.print(f"{__logo__} Token Forensics\n")
+    console.print(f"Workspace: [cyan]{workspace}[/cyan]")
+    console.print(f"Query: [yellow]{query}[/yellow]\n")
+
+    # Optional SkillManager (can fail if Chroma/embeddings unavailable)
+    skill_manager = None
+    try:
+        from nanobot.agent.skill_manager import SkillManager
+        from nanobot.memory.vector_manager import VectorDBManager
+
+        db_path = Path.home() / ".nanobot" / "chroma"
+        skill_storage = Path.home() / ".nanobot" / "skills"
+        skill_manager = SkillManager(skill_storage, db_manager=VectorDBManager(db_path))
+    except Exception as exc:
+        console.print(f"[yellow]SkillManager unavailable:[/yellow] {exc}")
+
+    context = ContextBuilder(workspace, skill_manager=skill_manager)
+
+    # ---------------- Context breakdown ----------------
+    identity = context._get_identity()
+    bootstrap_files = {}
+    for filename in context.BOOTSTRAP_FILES:
+        file_path = workspace / filename
+        if file_path.exists():
+            bootstrap_files[filename] = file_path.read_text(encoding="utf-8")
+    bootstrap = context._load_bootstrap_files()
+
+    raw_memory = context.memory.get_memory_context()
+    memory = context._truncate_text(raw_memory, context.MAX_MEMORY_CONTEXT_CHARS)
+    prompt = context.build_system_prompt(user_query=query)
+
+    size_rows = [
+        ("identity", f"{len(identity):,} chars (~{_estimate_tokens(identity):,} tok)"),
+        ("bootstrap(total)", f"{len(bootstrap):,} chars (~{_estimate_tokens(bootstrap):,} tok)"),
+        ("memory(raw)", f"{len(raw_memory):,} chars (~{_estimate_tokens(raw_memory):,} tok)"),
+        ("memory(capped)", f"{len(memory):,} chars (~{_estimate_tokens(memory):,} tok)"),
+        ("system_prompt(total)", f"{len(prompt):,} chars (~{_estimate_tokens(prompt):,} tok)"),
+    ]
+    _print_size_table("Context size breakdown", size_rows)
+
+    if bootstrap_files:
+        bootstrap_rows = [
+            (name, f"{len(content):,} chars (~{_estimate_tokens(content):,} tok)")
+            for name, content in bootstrap_files.items()
+        ]
+        _print_size_table("Bootstrap files", bootstrap_rows)
+
+    if skill_manager:
+        try:
+            search_results = skill_manager.search_skills(query, limit=8)
+            table = Table(title="Semantic skill hits")
+            table.add_column("Skill", style="cyan")
+            table.add_column("Score", style="yellow")
+            table.add_column("Distance", style="yellow")
+            table.add_column("Included", style="green")
+
+            for item in search_results:
+                name = str(item.get("skill_name", ""))
+                score = item.get("score")
+                distance = item.get("distance")
+                included = context._is_relevant_skill_result(item)
+                score_str = f"{float(score):.3f}" if isinstance(score, (int, float)) else "—"
+                dist_str = f"{float(distance):.3f}" if isinstance(distance, (int, float)) else "—"
+                table.add_row(name, score_str, dist_str, "yes" if included else "no")
+            console.print(table)
+        except Exception as exc:
+            console.print(f"[yellow]Skill search diagnostics failed:[/yellow] {exc}")
+
+    # ---------------- Tools schema payload ----------------
+    try:
+        from nanobot.agent.skill_generator import SkillGenerator
+        from nanobot.agent.subagent import SubagentManager
+        from nanobot.agent.tools.cron import CronTool
+        from nanobot.agent.tools.filesystem import (
+            EditFileTool,
+            ListDirTool,
+            ReadFileTool,
+            WriteFileTool,
+        )
+        from nanobot.agent.tools.mcp import MCPCallTool
+        from nanobot.agent.tools.memory import MemorySearchTool
+        from nanobot.agent.tools.message import MessageTool
+        from nanobot.agent.tools.registry import ToolRegistry
+        from nanobot.agent.tools.shell import ExecTool
+        from nanobot.agent.tools.skill import CreateSkillTool
+        from nanobot.agent.tools.spawn import SpawnTool
+        from nanobot.agent.tools.web import WebFetchTool, WebSearchTool
+        from nanobot.bus.queue import MessageBus
+        from nanobot.config.schema import ExecToolConfig
+        from nanobot.cron.service import CronService
+        from nanobot.providers.base import LLMProvider, LLMResponse
+        from nanobot.session.manager import SessionManager
+
+        class _NoopProvider(LLMProvider):
+            async def chat(self, *args, **kwargs):  # type: ignore[override]
+                return LLMResponse(content="forensics")
+
+            def get_default_model(self) -> str:
+                return config.agents.defaults.model
+
+        async def _noop_send(_msg):
+            return None
+
+        provider = _NoopProvider()
+        bus = MessageBus()
+        tools = ToolRegistry()
+        allowed_dir = workspace if config.tools.restrict_to_workspace else None
+        exec_cfg = config.tools.exec if config.tools else ExecToolConfig()
+
+        tools.register(ReadFileTool(allowed_dir=allowed_dir))
+        tools.register(WriteFileTool(allowed_dir=allowed_dir))
+        tools.register(EditFileTool(allowed_dir=allowed_dir))
+        tools.register(ListDirTool(allowed_dir=allowed_dir))
+        tools.register(
+            ExecTool(
+                working_dir=str(workspace),
+                timeout=exec_cfg.timeout,
+                restrict_to_workspace=config.tools.restrict_to_workspace,
+            )
+        )
+        tools.register(WebSearchTool(api_key=config.tools.web.search.api_key or None))
+        tools.register(WebFetchTool())
+        tools.register(MemorySearchTool())
+
+        session_manager = SessionManager(workspace)
+        create_skill_tool = CreateSkillTool(
+            skill_generator=SkillGenerator(
+                skills_dir=workspace / "skills",
+                provider=provider,
+                model=config.agents.defaults.model,
+                skill_manager=skill_manager,
+            ),
+            session_manager=session_manager,
+        )
+        tools.register(create_skill_tool)
+        tools.register(MessageTool(send_callback=_noop_send))
+
+        subagents = SubagentManager(
+            provider=provider,
+            workspace=workspace,
+            bus=bus,
+            model=config.agents.defaults.model,
+            brave_api_key=config.tools.web.search.api_key or None,
+            exec_config=exec_cfg,
+            restrict_to_workspace=config.tools.restrict_to_workspace,
+        )
+        tools.register(SpawnTool(manager=subagents))
+        tools.register(CronTool(CronService(get_data_dir() / "cron" / "jobs.json")))
+        tools.register(MCPCallTool())
+
+        definitions = tools.get_definitions()
+        payload = json.dumps(definitions, ensure_ascii=False)
+
+        schema_rows = [
+            ("tools_count", str(len(definitions))),
+            ("schema_json_bytes", f"{len(payload.encode('utf-8')):,}"),
+            ("schema_est_tokens", f"{_estimate_tokens(payload):,}"),
+        ]
+        _print_size_table("Tools schema payload", schema_rows)
+    except Exception as exc:
+        console.print(f"[yellow]Tools schema diagnostics failed:[/yellow] {exc}")
+
+    # ---------------- Token usage history ----------------
+    if DB_PATH.exists():
+        try:
+            with sqlite3.connect(DB_PATH) as conn:
+                conn.row_factory = sqlite3.Row
+
+                daily = conn.execute(
+                    """
+                    SELECT date,
+                           SUM(prompt_tokens) AS prompt_tokens,
+                           SUM(completion_tokens) AS completion_tokens,
+                           SUM(total_tokens) AS total_tokens,
+                           SUM(requests) AS requests
+                    FROM token_usage
+                    GROUP BY date
+                    ORDER BY date DESC
+                    LIMIT ?
+                    """,
+                    (days,),
+                ).fetchall()
+
+                if daily:
+                    table = Table(title=f"Token usage (last {days} days)")
+                    table.add_column("Date", style="cyan")
+                    table.add_column("Prompt", style="yellow")
+                    table.add_column("Completion", style="yellow")
+                    table.add_column("Total", style="yellow")
+                    table.add_column("Requests", style="green")
+                    table.add_column("Avg/Req", style="magenta")
+                    for row in daily:
+                        req = max(1, int(row["requests"] or 0))
+                        avg = int((row["total_tokens"] or 0) / req)
+                        table.add_row(
+                            str(row["date"]),
+                            f"{int(row['prompt_tokens'] or 0):,}",
+                            f"{int(row['completion_tokens'] or 0):,}",
+                            f"{int(row['total_tokens'] or 0):,}",
+                            f"{int(row['requests'] or 0):,}",
+                            f"{avg:,}",
+                        )
+                    console.print(table)
+
+                    # Spike detection (largest day-over-day avg/request ratio)
+                    asc = list(reversed(daily))
+                    spikes: list[tuple[str, float]] = []
+                    for i in range(1, len(asc)):
+                        prev = asc[i - 1]
+                        cur = asc[i]
+                        prev_req = max(1, int(prev["requests"] or 0))
+                        cur_req = max(1, int(cur["requests"] or 0))
+                        prev_avg = (prev["total_tokens"] or 0) / prev_req
+                        cur_avg = (cur["total_tokens"] or 0) / cur_req
+                        if prev_avg > 0:
+                            spikes.append((str(cur["date"]), float(cur_avg / prev_avg)))
+                    spikes.sort(key=lambda x: x[1], reverse=True)
+                    if spikes:
+                        spike_rows = [
+                            (date, f"{ratio:.2f}x")
+                            for date, ratio in spikes[:5]
+                            if ratio >= 1.2
+                        ]
+                        if spike_rows:
+                            _print_size_table("Potential spike dates (avg tokens/request)", spike_rows)
+                else:
+                    console.print("[yellow]No token_usage records found in memory DB.[/yellow]")
+        except Exception as exc:
+            console.print(f"[yellow]Failed to read token usage from DB:[/yellow] {exc}")
+    else:
+        console.print(f"[yellow]memory.db not found:[/yellow] {DB_PATH}")
+
+    # ---------------- Git correlation ----------------
+    repo_root = Path(__file__).resolve().parents[2]
+    git_cmd = [
+        "git",
+        "-C",
+        str(repo_root),
+        "log",
+        "--date=short",
+        "--pretty=format:%h %ad %s",
+        "--",
+        "nanobot/agent/context.py",
+        "nanobot/agent/skill_manager.py",
+        "nanobot/agent/loop.py",
+    ]
+    try:
+        result = subprocess.run(git_cmd, capture_output=True, text=True, check=False)
+        lines = [line for line in result.stdout.splitlines() if line.strip()]
+        if lines:
+            table = Table(title="Git correlation (context/skills/loop)")
+            table.add_column("Recent commits", style="cyan")
+            for line in lines[:15]:
+                table.add_row(line)
+            console.print(table)
+        else:
+            console.print("[yellow]No git history found for target files.[/yellow]")
+    except Exception as exc:
+        console.print(f"[yellow]Git correlation failed:[/yellow] {exc}")
+
+    console.print(f"\n[green]Forensics completed at {datetime.now().isoformat(timespec='seconds')}[/green]")
+
+
+@app.command()
 def status():
     """Show nanobot status."""
     from nanobot.config.loader import load_config, get_config_path
