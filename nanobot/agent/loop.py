@@ -58,6 +58,10 @@ class AgentLoop:
         cron_service: "CronService | None" = None,
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
+        history_max_messages: int = 50,
+        history_max_chars: int = 12000,
+        system_prompt_max_chars: int = 14000,
+        memory_fact_value_max_chars: int = 180,
     ):
         from nanobot.config.schema import ExecToolConfig
         from nanobot.cron.service import CronService
@@ -70,6 +74,8 @@ class AgentLoop:
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
+        self.history_max_messages = max(1, int(history_max_messages))
+        self.history_max_chars = max(1000, int(history_max_chars)) if history_max_chars else None
 
         # VectorDBManager + SkillManager для семантического подбора навыков
         db_path = Path.home() / ".nanobot" / "chroma"
@@ -78,6 +84,12 @@ class AgentLoop:
         self.skill_manager = SkillManager(skill_storage, db_manager=db_manager)
 
         self.context = ContextBuilder(workspace, skill_manager=self.skill_manager)
+        if system_prompt_max_chars:
+            self.context.MAX_SYSTEM_PROMPT_CHARS = max(1000, int(system_prompt_max_chars))
+        if memory_fact_value_max_chars:
+            self.context.MAX_MEMORY_FACT_VALUE_CHARS = max(
+                40, int(memory_fact_value_max_chars)
+            )
         self.sessions = session_manager or SessionManager(workspace)
         self.tools = ToolRegistry()
         self.reflection = Reflection(provider=provider, model=self.model)
@@ -223,13 +235,27 @@ class AgentLoop:
             cron_tool.set_context(msg.channel, msg.chat_id)
         
         # Build initial messages (use get_history for LLM-formatted messages)
+        history = session.get_history(
+            max_messages=self.history_max_messages,
+            max_chars=self.history_max_chars,
+        )
         messages = self.context.build_messages(
-            history=session.get_history(),
+            history=history,
             current_message=msg.content,
             media=msg.media if msg.media else None,
             channel=msg.channel,
             chat_id=msg.chat_id,
         )
+        system_chars = 0
+        if messages and messages[0].get("role") == "system":
+            system_chars = len(str(messages[0].get("content", "")))
+        history_chars = sum(len(str(m.get("content", ""))) for m in history)
+        usage_totals = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+        }
+        llm_calls = 0
         
         # Agent loop
         iteration = 0
@@ -249,6 +275,17 @@ class AgentLoop:
                     ),
                     timeout=120.0,
                 )
+                llm_calls += 1
+                if response.usage:
+                    usage_totals["prompt_tokens"] += int(
+                        response.usage.get("prompt_tokens", 0) or 0
+                    )
+                    usage_totals["completion_tokens"] += int(
+                        response.usage.get("completion_tokens", 0) or 0
+                    )
+                    usage_totals["total_tokens"] += int(
+                        response.usage.get("total_tokens", 0) or 0
+                    )
             except asyncio.TimeoutError:
                 logger.error("LLM call timed out after 120s")
                 final_content = "Извини, сервер не успел ответить вовремя (таймаут 2 мин). Попробуй ещё раз."
@@ -389,6 +426,23 @@ class AgentLoop:
         # Log response preview
         preview = final_content[:120] + "..." if len(final_content) > 120 else final_content
         logger.info(f"Response to {msg.channel}:{msg.sender_id}: {preview}")
+        logger.info(
+            json.dumps(
+                {
+                    "event": "request_usage",
+                    "session_key": msg.session_key,
+                    "model": self.model,
+                    "iterations": iteration,
+                    "llm_calls": llm_calls,
+                    "history_messages": len(history),
+                    "history_chars": history_chars,
+                    "system_prompt_chars": system_chars,
+                    "prompt_tokens": usage_totals["prompt_tokens"],
+                    "completion_tokens": usage_totals["completion_tokens"],
+                    "total_tokens": usage_totals["total_tokens"],
+                }
+            )
+        )
         
         # Save to session
         session.add_message("user", msg.content)
@@ -673,7 +727,10 @@ class AgentLoop:
         
         # Build messages with the announce content
         messages = self.context.build_messages(
-            history=session.get_history(),
+            history=session.get_history(
+                max_messages=self.history_max_messages,
+                max_chars=self.history_max_chars,
+            ),
             current_message=msg.content,
             channel=origin_channel,
             chat_id=origin_chat_id,

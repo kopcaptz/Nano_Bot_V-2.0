@@ -26,6 +26,16 @@ class ContextBuilder:
     """
     
     BOOTSTRAP_FILES = ["AGENTS.md", "SOUL.md", "USER.md", "TOOLS.md", "IDENTITY.md"]
+    # Emergency token guards (keep context compact by default)
+    MAX_MEMORY_CONTEXT_CHARS = 2500
+    MAX_SKILLS_SECTION_CHARS = 2200
+    MAX_SYSTEM_PROMPT_CHARS = 14000
+    MAX_RELEVANT_SKILLS = 3
+    MAX_AVAILABLE_SKILLS = 12
+    MAX_SKILL_DESCRIPTION_CHARS = 140
+    MAX_MEMORY_FACT_VALUE_CHARS = 180
+    MIN_RELEVANT_SKILL_SCORE = 0.45
+    MAX_RELEVANT_SKILL_DISTANCE = 0.55
     
     def __init__(self, workspace: Path, skill_manager: "SkillManager | None" = None):
         self.workspace = workspace
@@ -58,17 +68,21 @@ class ContextBuilder:
         if bootstrap:
             parts.append(bootstrap)
         
-        # Memory context
-        memory = self.memory.get_memory_context()
+        # Memory context (guarded by budget)
+        raw_memory = self.memory.get_memory_context()
+        memory = self._truncate_text(raw_memory, self.MAX_MEMORY_CONTEXT_CHARS)
         if memory:
             parts.append(f"# Memory\n\n{memory}")
         
-        # Skills via SkillManager (fallback if skill_manager is None)
+        # Skills via SkillManager (fallback if skill_manager is None).
+        # Emergency mitigation: include compact summaries only (no full SKILL content).
         skills_parts = []
         seen: set[str] = set()
         elapsed_always_load_ms = 0.0
         elapsed_search_ms = 0.0
         search_error: str | None = None
+        relevant_count = 0
+        available_count = 0
         
         if self.skill_manager:
             try:
@@ -77,14 +91,19 @@ class ContextBuilder:
                 always_skills = self.skill_manager.list_always_load_skills()
                 elapsed_always_load_ms = (time.perf_counter() - t0_always) * 1000
                 
-                active_content_parts = []
+                pinned_lines = []
                 for skill in always_skills:
-                    content = skill.get("content", "")
-                    if content:
-                        name = skill.get("name", "")
-                        if name:
-                            seen.add(name)
-                        active_content_parts.append(f"### Skill: {name}\n\n{content}")
+                    name = str(skill.get("name", "")).strip()
+                    if not name:
+                        continue
+                    seen.add(name)
+                    desc = self._format_skill_description(
+                        skill.get("description", name),
+                        self.MAX_SKILL_DESCRIPTION_CHARS,
+                    )
+                    pinned_lines.append(f"- {name}: {desc} (pinned)")
+                if pinned_lines:
+                    skills_parts.append("# Pinned Skills\n\n" + "\n".join(pinned_lines))
                 
                 # 2. Semantic search (with timing)
                 search_results = []
@@ -99,47 +118,82 @@ class ContextBuilder:
                         elapsed_search_ms = (time.perf_counter() - t0_search) * 1000
                         search_error = str(e)
                         logger.warning("search_skills failed: {}", e)
+                    relevant_lines = []
                     for r in search_results:
-                        name = r.get("skill_name")
-                        if name and name not in seen:
-                            seen.add(name)
-                            skill = self.skill_manager.get_skill(name)
-                            if skill and skill.get("content"):
-                                active_content_parts.append(
-                                    f"### Skill: {name} (relevant to query)\n\n{skill['content']}"
-                                )
-                
-                if active_content_parts:
-                    skills_parts.append(
-                        "# Active Skills\n\n"
-                        + "\n\n---\n\n".join(active_content_parts)
-                    )
+                        if not self._is_relevant_skill_result(r):
+                            continue
+                        name = str(r.get("skill_name", "")).strip()
+                        if not name or name in seen:
+                            continue
+                        seen.add(name)
+                        skill = self.skill_manager.get_skill(name) or {}
+                        desc = self._format_skill_description(
+                            skill.get("description", name),
+                            self.MAX_SKILL_DESCRIPTION_CHARS,
+                        )
+                        score = self._get_score(r)
+                        distance = self._get_distance(r)
+                        suffix = []
+                        if score is not None:
+                            suffix.append(f"score={score:.2f}")
+                        if distance is not None:
+                            suffix.append(f"distance={distance:.2f}")
+                        tag = f" ({', '.join(suffix)})" if suffix else ""
+                        relevant_lines.append(f"- {name}: {desc}{tag}")
+                        if len(relevant_lines) >= self.MAX_RELEVANT_SKILLS:
+                            break
+                    relevant_count = len(relevant_lines)
+                    if relevant_lines:
+                        skills_parts.append("# Relevant Skills\n\n" + "\n".join(relevant_lines))
                 
                 # 3. Available Skills (summary of remaining)
                 all_skills = self.skill_manager.list_skills()
                 available = [s for s in all_skills if s.get("name") not in seen]
                 if available:
-                    summary_lines = [
-                        f"- {s['name']}: {s.get('description', s['name'])}"
-                        for s in available
-                    ]
+                    summary_lines = []
+                    for s in available[: self.MAX_AVAILABLE_SKILLS]:
+                        name = str(s.get("name", "")).strip()
+                        if not name:
+                            continue
+                        desc = self._format_skill_description(
+                            s.get("description", name),
+                            self.MAX_SKILL_DESCRIPTION_CHARS,
+                        )
+                        summary_lines.append(f"- {name}: {desc}")
+                    remaining = max(0, len(available) - len(summary_lines))
+                    available_count = len(summary_lines)
+                    if remaining:
+                        summary_lines.append(f"- ... and {remaining} more skills")
                     skills_parts.append(
                         "# Available Skills\n\n"
                         + "\n".join(summary_lines)
-                        + "\n\nUse read_file to load a skill."
+                        + "\n\nUse read_file to load a skill only when needed."
                     )
             except Exception as e:
                 logger.warning("SkillManager error in build_system_prompt: {}", e)
         
         if skills_parts:
-            parts.append("\n\n".join(skills_parts))
+            skills_text = self._truncate_text(
+                "\n\n".join(skills_parts),
+                self.MAX_SKILLS_SECTION_CHARS,
+            )
+            if skills_text:
+                parts.append(skills_text)
         
         elapsed_total_ms = (time.perf_counter() - t_total_start) * 1000
+        raw_prompt = "\n\n---\n\n".join(parts)
+        final_prompt = self._truncate_text(raw_prompt, self.MAX_SYSTEM_PROMPT_CHARS)
         metrics = {
             "event": "build_system_prompt",
             "always_load_ms": round(elapsed_always_load_ms, 2),
             "semantic_search_ms": round(elapsed_search_ms, 2),
             "total_ms": round(elapsed_total_ms, 2),
+            "memory_chars": len(memory),
+            "skills_chars": len(parts[-1]) if skills_parts else 0,
+            "relevant_skills_count": relevant_count,
+            "available_skills_count": available_count,
+            "prompt_chars": len(final_prompt),
+            "prompt_truncated": len(final_prompt) < len(raw_prompt),
         }
         if not self.skill_manager:
             metrics["skill_manager"] = False
@@ -147,7 +201,60 @@ class ContextBuilder:
             metrics["error"] = search_error
         logger.info(json.dumps(metrics))
         
-        return "\n\n---\n\n".join(parts)
+        return final_prompt
+
+    def _truncate_text(self, text: str, max_chars: int) -> str:
+        """Truncate long text safely with a visible marker."""
+        if not text:
+            return ""
+        if max_chars <= 0 or len(text) <= max_chars:
+            return text
+        marker = "\n\n[...truncated to reduce token usage...]"
+        keep = max(0, max_chars - len(marker))
+        return text[:keep].rstrip() + marker
+
+    def _format_skill_description(self, description: str | Any, max_chars: int) -> str:
+        """Normalize and compact skill description text."""
+        text = " ".join(str(description or "").strip().split())
+        if not text:
+            return "No description."
+        if len(text) <= max_chars:
+            return text
+        return text[: max_chars - 1].rstrip() + "…"
+
+    def _get_score(self, result: dict[str, Any]) -> float | None:
+        """Extract numeric relevance score if present."""
+        value = result.get("score")
+        if isinstance(value, (int, float)):
+            return float(value)
+        return None
+
+    def _get_distance(self, result: dict[str, Any]) -> float | None:
+        """Extract numeric vector distance if present."""
+        value = result.get("distance")
+        if isinstance(value, (int, float)):
+            return float(value)
+        return None
+
+    def _is_relevant_skill_result(self, result: dict[str, Any]) -> bool:
+        """Apply relevance threshold guard for semantic skill results."""
+        score = self._get_score(result)
+        if score is not None:
+            return score >= self.MIN_RELEVANT_SKILL_SCORE
+        distance = self._get_distance(result)
+        if distance is not None:
+            return distance <= self.MAX_RELEVANT_SKILL_DISTANCE
+        # If score/distance absent, keep conservative and do not auto-inject.
+        return False
+
+    def _format_memory_fact_value(self, value: Any) -> str:
+        """Compact memory fact value text to avoid oversized system messages."""
+        text = " ".join(str(value or "").strip().split())
+        if not text:
+            return "?"
+        if len(text) <= self.MAX_MEMORY_FACT_VALUE_CHARS:
+            return text
+        return text[: self.MAX_MEMORY_FACT_VALUE_CHARS - 1].rstrip() + "…"
     
     def _get_identity(self) -> str:
         """Get the core identity section."""
@@ -248,7 +355,8 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
                 relevant_facts = semantic_search(current_message, limit=5)
                 if relevant_facts:
                     facts_text = "\n".join(
-                        f"- [{f.get('domain', 'general')}] {f.get('category', '?')} → {f.get('key', '?')}: {f.get('value', '?')}"
+                        f"- [{f.get('domain', 'general')}] {f.get('category', '?')} → {f.get('key', '?')}: "
+                        f"{self._format_memory_fact_value(f.get('value', '?'))}"
                         for f in relevant_facts
                         if f.get("distance", 1.0) < 0.7
                     )

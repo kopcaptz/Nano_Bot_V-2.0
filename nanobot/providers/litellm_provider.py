@@ -1,6 +1,7 @@
 """LiteLLM provider implementation for multi-provider support."""
 
 import json
+import logging
 import os
 from typing import Any
 
@@ -9,6 +10,8 @@ from litellm import acompletion
 
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.providers.registry import find_by_model, find_gateway
+
+logger = logging.getLogger(__name__)
 
 
 class LiteLLMProvider(LLMProvider):
@@ -153,13 +156,33 @@ class LiteLLMProvider(LLMProvider):
 
         try:
             response = await acompletion(**kwargs)
-            return self._parse_response(response)
+            result = self._parse_response(response)
+
+            # Track token usage in memory DB (best effort)
+            if result.usage:
+                self._track_tokens(model, result.usage)
+
+            return result
         except Exception as e:
             # Return error as content for graceful handling
             return LLMResponse(
                 content=f"Error calling LLM: {str(e)}",
                 finish_reason="error",
             )
+
+    def _track_tokens(self, model: str, usage: dict[str, int]) -> None:
+        """Persist token usage to SQLite (best effort)."""
+        try:
+            from nanobot.memory import add_token_usage
+
+            add_token_usage(
+                model=model,
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0),
+                total_tokens=usage.get("total_tokens", 0),
+            )
+        except Exception as exc:
+            logger.debug("Failed to track tokens: %s", exc)
     
     def _parse_response(self, response: Any) -> LLMResponse:
         """Parse LiteLLM response into our standard format."""

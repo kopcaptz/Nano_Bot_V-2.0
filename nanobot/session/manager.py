@@ -37,18 +37,39 @@ class Session:
         self.messages.append(msg)
         self.updated_at = datetime.now()
     
-    def get_history(self, max_messages: int = 50) -> list[dict[str, Any]]:
+    def get_history(
+        self,
+        max_messages: int = 50,
+        max_chars: int | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Get message history for LLM context.
         
         Args:
             max_messages: Maximum messages to return.
+            max_chars: Optional total character budget across returned messages.
         
         Returns:
             List of messages in LLM format.
         """
         # Get recent messages
         recent = self.messages[-max_messages:] if len(self.messages) > max_messages else self.messages
+
+        if max_chars and max_chars > 0:
+            total_chars = 0
+            trimmed_reversed: list[dict[str, Any]] = []
+            for msg in reversed(recent):
+                content = msg.get("content", "")
+                content_len = len(content) if isinstance(content, str) else len(str(content))
+
+                # Keep at least one latest message even if it alone exceeds budget.
+                if trimmed_reversed and total_chars + content_len > max_chars:
+                    break
+
+                trimmed_reversed.append(msg)
+                total_chars += content_len
+
+            recent = list(reversed(trimmed_reversed))
         
         # Convert to LLM format (just role and content)
         return [{"role": m["role"], "content": m["content"]} for m in recent]
