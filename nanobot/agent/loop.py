@@ -223,12 +223,15 @@ class AgentLoop:
             cron_tool.set_context(msg.channel, msg.chat_id)
         
         # Build initial messages (use get_history for LLM-formatted messages)
+        last_ts, last_content = session.get_last_user_message_info()
         messages = self.context.build_messages(
             history=session.get_history(),
             current_message=msg.content,
             media=msg.media if msg.media else None,
             channel=msg.channel,
             chat_id=msg.chat_id,
+            last_user_message_ts=last_ts,
+            last_user_message_content=last_content,
         )
         
         # Agent loop

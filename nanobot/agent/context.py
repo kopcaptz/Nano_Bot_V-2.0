@@ -5,6 +5,7 @@ import json
 import mimetypes
 import platform
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -148,7 +149,43 @@ class ContextBuilder:
         logger.info(json.dumps(metrics))
         
         return "\n\n---\n\n".join(parts)
-    
+
+    def _build_mindfulness_note(
+        self, last_user_ts: str | None, last_user_content: str | None
+    ) -> str:
+        """
+        Build mindfulness protocol note (Level 1). ~40 tokens max.
+
+        Modes:
+        - < 5 min: silent (empty)
+        - 5-60 min: brief context mention
+        - > 60 min: explicit pause mention, suggest summarize + confirm priority
+        """
+        if not last_user_ts:
+            return ""
+        try:
+            last_dt = datetime.fromisoformat(last_user_ts.replace("Z", "+00:00"))
+            now = datetime.now(last_dt.tzinfo) if last_dt.tzinfo else datetime.now()
+            diff = now - last_dt
+            minutes = diff.total_seconds() / 60
+        except Exception:
+            return ""
+        topic = (last_user_content or "previous task")[:60].strip()
+        if minutes < 5:
+            return ""
+        if minutes <= 60:
+            return (
+                f"NOTE: User returned after {int(minutes)} min pause. "
+                f"Last topic: {topic}. Briefly acknowledge and continue."
+            )
+        hours = int(minutes // 60)
+        mins_rem = int(minutes % 60)
+        time_str = f"{hours}h" + (f" {mins_rem}m" if mins_rem else "")
+        return (
+            f"NOTE: User was away for {time_str}. Last topic: {topic}. "
+            "Briefly summarize (1 sentence), confirm if task still relevant."
+        )
+
     def _get_identity(self) -> str:
         """Get the core identity section."""
         from datetime import datetime
@@ -219,6 +256,8 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
         media: list[str] | None = None,
         channel: str | None = None,
         chat_id: str | None = None,
+        last_user_message_ts: str | None = None,
+        last_user_message_content: str | None = None,
     ) -> list[dict[str, Any]]:
         """
         Build the complete message list for an LLM call.
@@ -230,6 +269,8 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
             media: Optional list of local file paths for images/media.
             channel: Current channel (telegram, feishu, etc.).
             chat_id: Current chat/user ID.
+            last_user_message_ts: ISO timestamp of previous user message (mindfulness protocol).
+            last_user_message_content: Content of previous user message (for context).
 
         Returns:
             List of messages including system prompt.
@@ -240,6 +281,15 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
         system_prompt = self.build_system_prompt(user_query=current_message or "")
         if channel and chat_id:
             system_prompt += f"\n\n## Current Session\nChannel: {channel}\nChat ID: {chat_id}"
+
+        # Mindfulness protocol (Level 1): time-aware response style
+        mindfulness = self._build_mindfulness_note(
+            last_user_ts=last_user_message_ts,
+            last_user_content=last_user_message_content,
+        )
+        if mindfulness:
+            system_prompt += f"\n\n{mindfulness}"
+
         messages.append({"role": "system", "content": system_prompt})
 
         # Автоматическое обогащение контекста из памяти
