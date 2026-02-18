@@ -129,6 +129,7 @@ class SubagentManager:
                     messages=messages,
                     tools=tools.get_definitions(),
                     model=self.model,
+                    metadata={"is_background": True},
                 )
                 
                 if response.has_tool_calls:
