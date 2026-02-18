@@ -48,6 +48,10 @@ class LLMProvider(ABC):
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        usage_session_id: str | None = None,
+        usage_request_id: str | None = None,
+        usage_iteration: int | None = None,
+        usage_conversation_key: str | None = None,
     ) -> LLMResponse:
         """
         Send a chat completion request.
@@ -58,6 +62,10 @@ class LLMProvider(ABC):
             model: Model identifier (provider-specific).
             max_tokens: Maximum tokens in response.
             temperature: Sampling temperature.
+            usage_session_id: Request-level usage group id.
+            usage_request_id: Unique id of this concrete LLM call.
+            usage_iteration: Iteration index in agent loop.
+            usage_conversation_key: Stable chat/session key (channel:chat_id).
         
         Returns:
             LLMResponse with content and/or tool calls.

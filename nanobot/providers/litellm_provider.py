@@ -1,6 +1,7 @@
 """LiteLLM provider implementation for multi-provider support."""
 
 import json
+import logging
 import os
 from typing import Any
 
@@ -9,6 +10,9 @@ from litellm import acompletion
 
 from nanobot.providers.base import LLMProvider, LLMResponse, ToolCallRequest
 from nanobot.providers.registry import find_by_model, find_gateway
+
+
+logger = logging.getLogger(__name__)
 
 
 class LiteLLMProvider(LLMProvider):
@@ -106,6 +110,10 @@ class LiteLLMProvider(LLMProvider):
         model: str | None = None,
         max_tokens: int = 4096,
         temperature: float = 0.7,
+        usage_session_id: str | None = None,
+        usage_request_id: str | None = None,
+        usage_iteration: int | None = None,
+        usage_conversation_key: str | None = None,
     ) -> LLMResponse:
         """
         Send a chat completion request via LiteLLM.
@@ -153,13 +161,83 @@ class LiteLLMProvider(LLMProvider):
 
         try:
             response = await acompletion(**kwargs)
-            return self._parse_response(response)
+            result = self._parse_response(response)
+            self._track_usage(
+                response=response,
+                usage=result.usage,
+                model=model,
+                usage_session_id=usage_session_id,
+                usage_request_id=usage_request_id,
+                usage_iteration=usage_iteration,
+                usage_conversation_key=usage_conversation_key,
+            )
+            return result
         except Exception as e:
             # Return error as content for graceful handling
             return LLMResponse(
                 content=f"Error calling LLM: {str(e)}",
                 finish_reason="error",
             )
+
+    def _track_usage(
+        self,
+        response: Any,
+        usage: dict[str, int],
+        model: str,
+        usage_session_id: str | None,
+        usage_request_id: str | None,
+        usage_iteration: int | None,
+        usage_conversation_key: str | None,
+    ) -> None:
+        """Persist token usage for legacy aggregate and forensic per-call views."""
+        if not usage:
+            return
+
+        prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+        total_tokens = int(usage.get("total_tokens", 0) or 0)
+        if total_tokens <= 0 and (prompt_tokens > 0 or completion_tokens > 0):
+            total_tokens = prompt_tokens + completion_tokens
+
+        cost_usd = self._calculate_cost_usd(response)
+
+        try:
+            from nanobot.memory import add_token_usage, add_token_usage_call
+
+            # Backward-compatible aggregate (dashboard and tokens tool).
+            add_token_usage(
+                model=model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+            )
+
+            # Forensic per-call event, only when ids are provided.
+            if usage_session_id and usage_request_id:
+                add_token_usage_call(
+                    session_id=usage_session_id,
+                    request_id=usage_request_id,
+                    conversation_key=usage_conversation_key,
+                    model=model,
+                    prompt_tokens=prompt_tokens,
+                    completion_tokens=completion_tokens,
+                    total_tokens=total_tokens,
+                    cost_usd=cost_usd,
+                    iteration=usage_iteration,
+                )
+        except Exception as exc:
+            logger.debug("Failed to persist token usage: %s", exc)
+
+    @staticmethod
+    def _calculate_cost_usd(response: Any) -> float:
+        """Best-effort usage cost calculation in USD."""
+        try:
+            cost = litellm.completion_cost(completion_response=response)
+            if cost is None:
+                return 0.0
+            return float(cost)
+        except Exception:
+            return 0.0
     
     def _parse_response(self, response: Any) -> LLMResponse:
         """Parse LiteLLM response into our standard format."""

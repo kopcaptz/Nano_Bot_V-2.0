@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -98,6 +98,24 @@ def init_db() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS token_usage_calls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                request_id TEXT NOT NULL UNIQUE,
+                conversation_key TEXT,
+                timestamp TEXT NOT NULL,
+                model TEXT NOT NULL,
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                cost_usd REAL NOT NULL DEFAULT 0,
+                iteration INTEGER,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS reflections (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 tool_name TEXT NOT NULL,
@@ -122,6 +140,15 @@ def init_db() -> None:
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_token_usage_date ON token_usage(date)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_token_usage_calls_timestamp ON token_usage_calls(timestamp DESC)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_token_usage_calls_session ON token_usage_calls(session_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_token_usage_calls_conversation_timestamp ON token_usage_calls(conversation_key, timestamp DESC)"
         )
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_reflections_tool ON reflections(tool_name)"
@@ -509,6 +536,59 @@ def add_token_usage(
         conn.commit()
 
 
+def add_token_usage_call(
+    session_id: str,
+    request_id: str,
+    model: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    total_tokens: int,
+    cost_usd: float = 0.0,
+    iteration: int | None = None,
+    conversation_key: str | None = None,
+    timestamp: str | None = None,
+) -> None:
+    """Сохраняет usage одного LLM-вызова для forensics."""
+    init_db()
+    now = _now_iso()
+    event_ts = timestamp or now
+
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO token_usage_calls (
+                session_id,
+                request_id,
+                conversation_key,
+                timestamp,
+                model,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                cost_usd,
+                iteration,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(request_id) DO NOTHING
+            """,
+            (
+                str(session_id),
+                str(request_id),
+                conversation_key,
+                event_ts,
+                model,
+                int(prompt_tokens),
+                int(completion_tokens),
+                int(total_tokens),
+                float(cost_usd),
+                iteration,
+                now,
+            ),
+        )
+        conn.commit()
+
+
 def get_token_usage_today() -> dict[str, Any]:
     """Возвращает статистику токенов за сегодня."""
     init_db()
@@ -560,3 +640,115 @@ def get_token_usage_period(days: int = 7) -> list[dict[str, Any]]:
         ).fetchall()
     
     return [_row_to_dict(row) for row in rows]
+
+
+def get_token_usage_sessions(days: int = 7, top: int = 20) -> list[dict[str, Any]]:
+    """Возвращает топ сессий по расходу токенов/стоимости за период."""
+    init_db()
+    safe_days = max(1, int(days))
+    safe_top = max(1, int(top))
+    since = (datetime.now() - timedelta(days=safe_days)).isoformat(timespec="seconds")
+
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                session_id,
+                MIN(conversation_key) AS conversation_key,
+                MIN(timestamp) AS first_timestamp,
+                MAX(timestamp) AS last_timestamp,
+                COUNT(*) AS llm_calls,
+                SUM(prompt_tokens) AS prompt_tokens,
+                SUM(completion_tokens) AS completion_tokens,
+                SUM(total_tokens) AS total_tokens,
+                SUM(cost_usd) AS cost_usd,
+                GROUP_CONCAT(DISTINCT model) AS models
+            FROM token_usage_calls
+            WHERE timestamp >= ?
+            GROUP BY session_id
+            ORDER BY cost_usd DESC, total_tokens DESC, llm_calls DESC
+            LIMIT ?
+            """,
+            (since, safe_top),
+        ).fetchall()
+
+    sessions: list[dict[str, Any]] = []
+    for row in rows:
+        item = _row_to_dict(row)
+        models = item.get("models") or ""
+        item["models"] = [m for m in str(models).split(",") if m]
+        sessions.append(item)
+
+    return sessions
+
+
+def get_token_usage_session_details(session_id: str) -> dict[str, Any] | None:
+    """Возвращает подробные usage-данные по session_id."""
+    init_db()
+
+    with _connect() as conn:
+        rows = conn.execute(
+            """
+            SELECT
+                request_id,
+                conversation_key,
+                timestamp,
+                model,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                cost_usd,
+                iteration
+            FROM token_usage_calls
+            WHERE session_id = ?
+            ORDER BY timestamp ASC, id ASC
+            """,
+            (session_id,),
+        ).fetchall()
+
+    if not rows:
+        return None
+
+    calls = [_row_to_dict(row) for row in rows]
+    by_model: dict[str, dict[str, Any]] = {}
+    conversation_key = ""
+
+    for call in calls:
+        model = call.get("model", "")
+        if not conversation_key and call.get("conversation_key"):
+            conversation_key = str(call.get("conversation_key"))
+
+        slot = by_model.setdefault(
+            model,
+            {
+                "model": model,
+                "llm_calls": 0,
+                "prompt_tokens": 0,
+                "completion_tokens": 0,
+                "total_tokens": 0,
+                "cost_usd": 0.0,
+            },
+        )
+        slot["llm_calls"] += 1
+        slot["prompt_tokens"] += int(call.get("prompt_tokens", 0) or 0)
+        slot["completion_tokens"] += int(call.get("completion_tokens", 0) or 0)
+        slot["total_tokens"] += int(call.get("total_tokens", 0) or 0)
+        slot["cost_usd"] += float(call.get("cost_usd", 0.0) or 0.0)
+
+    return {
+        "session_id": session_id,
+        "conversation_key": conversation_key or None,
+        "first_timestamp": calls[0].get("timestamp", ""),
+        "last_timestamp": calls[-1].get("timestamp", ""),
+        "llm_calls": len(calls),
+        "prompt_tokens": sum(int(c.get("prompt_tokens", 0) or 0) for c in calls),
+        "completion_tokens": sum(int(c.get("completion_tokens", 0) or 0) for c in calls),
+        "total_tokens": sum(int(c.get("total_tokens", 0) or 0) for c in calls),
+        "cost_usd": sum(float(c.get("cost_usd", 0.0) or 0.0) for c in calls),
+        "by_model": sorted(
+            by_model.values(),
+            key=lambda item: (float(item["cost_usd"]), int(item["total_tokens"])),
+            reverse=True,
+        ),
+        "calls": calls,
+    }

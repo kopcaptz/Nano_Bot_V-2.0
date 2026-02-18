@@ -799,6 +799,122 @@ def cron_run(
 
 
 # ============================================================================
+# Usage Forensics Commands
+# ============================================================================
+
+
+usage_app = typer.Typer(help="Inspect token usage forensics")
+app.add_typer(usage_app, name="usage")
+forensics_app = typer.Typer(help="Inspect forensic reports")
+app.add_typer(forensics_app, name="forensics")
+forensics_app.add_typer(usage_app, name="usage")
+
+
+@usage_app.command("sessions")
+def usage_sessions(
+    days: int = typer.Option(7, "--days", "-d", help="Period in days"),
+    top: int = typer.Option(20, "--top", "-t", help="Maximum sessions to show"),
+):
+    """Show top sessions by token/cost usage."""
+    from nanobot.memory import get_token_usage_sessions
+
+    rows = get_token_usage_sessions(days=days, top=top)
+    if not rows:
+        console.print(
+            f"[yellow]No token usage sessions found for the last {max(1, int(days))} day(s).[/yellow]"
+        )
+        return
+
+    table = Table(title=f"Token Usage Sessions (last {max(1, int(days))} day(s))")
+    table.add_column("#", style="dim")
+    table.add_column("Session ID", style="cyan", overflow="fold")
+    table.add_column("Conversation", overflow="fold")
+    table.add_column("LLM Calls", justify="right")
+    table.add_column("Total Tokens", justify="right")
+    table.add_column("Cost (USD)", justify="right")
+    table.add_column("First Call", overflow="fold")
+    table.add_column("Last Call", overflow="fold")
+
+    for idx, row in enumerate(rows, start=1):
+        table.add_row(
+            str(idx),
+            str(row.get("session_id", "")),
+            str(row.get("conversation_key") or "—"),
+            str(int(row.get("llm_calls", 0) or 0)),
+            f"{int(row.get('total_tokens', 0) or 0):,}",
+            f"${float(row.get('cost_usd', 0.0) or 0.0):.6f}",
+            str(row.get("first_timestamp", "")),
+            str(row.get("last_timestamp", "")),
+        )
+
+    console.print(table)
+
+
+@usage_app.command("session")
+def usage_session_details(
+    session_id: str = typer.Argument(..., help="Usage session id to inspect"),
+):
+    """Show detailed per-call usage for one session_id."""
+    from nanobot.memory import get_token_usage_session_details
+
+    details = get_token_usage_session_details(session_id)
+    if not details:
+        console.print(f"[red]Session usage not found:[/red] {session_id}")
+        raise typer.Exit(code=1)
+
+    console.print(f"[bold cyan]Usage session[/bold cyan]: {details['session_id']}")
+    console.print(
+        f"Conversation: {details.get('conversation_key') or '—'} | "
+        f"Calls: {details.get('llm_calls', 0)} | "
+        f"Tokens: {int(details.get('total_tokens', 0) or 0):,} | "
+        f"Cost: ${float(details.get('cost_usd', 0.0) or 0.0):.6f}"
+    )
+    console.print(
+        f"Window: {details.get('first_timestamp', '')} → {details.get('last_timestamp', '')}"
+    )
+    console.print()
+
+    by_model = details.get("by_model", [])
+    if by_model:
+        model_table = Table(title="By Model")
+        model_table.add_column("Model", style="magenta")
+        model_table.add_column("Calls", justify="right")
+        model_table.add_column("Tokens", justify="right")
+        model_table.add_column("Cost (USD)", justify="right")
+        for item in by_model:
+            model_table.add_row(
+                str(item.get("model", "")),
+                str(int(item.get("llm_calls", 0) or 0)),
+                f"{int(item.get('total_tokens', 0) or 0):,}",
+                f"${float(item.get('cost_usd', 0.0) or 0.0):.6f}",
+            )
+        console.print(model_table)
+        console.print()
+
+    calls_table = Table(title="LLM Calls")
+    calls_table.add_column("#", style="dim")
+    calls_table.add_column("Timestamp")
+    calls_table.add_column("Request ID", style="cyan")
+    calls_table.add_column("Iter", justify="right")
+    calls_table.add_column("Model")
+    calls_table.add_column("Tokens", justify="right")
+    calls_table.add_column("Cost (USD)", justify="right")
+
+    for idx, call in enumerate(details.get("calls", []), start=1):
+        calls_table.add_row(
+            str(idx),
+            str(call.get("timestamp", "")),
+            str(call.get("request_id", "")),
+            str(call.get("iteration") if call.get("iteration") is not None else "—"),
+            str(call.get("model", "")),
+            f"{int(call.get('total_tokens', 0) or 0):,}",
+            f"${float(call.get('cost_usd', 0.0) or 0.0):.6f}",
+        )
+
+    console.print(calls_table)
+
+
+# ============================================================================
 # Status Commands
 # ============================================================================
 

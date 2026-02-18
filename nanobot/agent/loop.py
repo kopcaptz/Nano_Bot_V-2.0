@@ -234,9 +234,12 @@ class AgentLoop:
         # Agent loop
         iteration = 0
         final_content = None
+        usage_session_id = secrets.token_hex(16)
+        usage_conversation_key = msg.session_key
         
         while iteration < self.max_iterations:
             iteration += 1
+            usage_request_id = secrets.token_hex(16)
             
             # Call LLM (with timeout to avoid hanging)
             try:
@@ -245,7 +248,11 @@ class AgentLoop:
                     self.provider.chat(
                         messages=messages,
                         tools=self.tools.get_definitions(),
-                        model=self.model
+                        model=self.model,
+                        usage_session_id=usage_session_id,
+                        usage_request_id=usage_request_id,
+                        usage_iteration=iteration,
+                        usage_conversation_key=usage_conversation_key,
                     ),
                     timeout=120.0,
                 )
@@ -315,6 +322,8 @@ class AgentLoop:
                             "assistant_content": response.content,
                             "reasoning_content": response.reasoning_content,
                             "original_user_message": msg.content,
+                            "usage_session_id": usage_session_id,
+                            "usage_last_iteration": iteration,
                             "action_id": action_id,
                             "created_at": datetime.now().isoformat(),
                         }
@@ -449,7 +458,12 @@ class AgentLoop:
 
             # Continue processing
             return await self._continue_after_tool(
-                session, msg, messages, original_user_message
+                session,
+                msg,
+                messages,
+                original_user_message,
+                usage_session_id=pending.get("usage_session_id"),
+                initial_iteration=int(pending.get("usage_last_iteration", 0) or 0),
             )
 
         elif user_response in ["no", "n", "нет", "н"]:
@@ -498,13 +512,18 @@ class AgentLoop:
         msg: InboundMessage,
         messages: list[dict[str, Any]],
         original_user_message: str,
+        usage_session_id: str | None = None,
+        initial_iteration: int = 0,
     ) -> OutboundMessage | None:
         """Continue agent loop after tool execution (post-confirmation)."""
-        iteration = 0
+        iteration = max(0, int(initial_iteration))
         final_content = None
+        usage_session_id = usage_session_id or secrets.token_hex(16)
+        usage_conversation_key = msg.session_key
 
         while iteration < self.max_iterations:
             iteration += 1
+            usage_request_id = secrets.token_hex(16)
 
             try:
                 response = await asyncio.wait_for(
@@ -512,6 +531,10 @@ class AgentLoop:
                         messages=messages,
                         tools=self.tools.get_definitions(),
                         model=self.model,
+                        usage_session_id=usage_session_id,
+                        usage_request_id=usage_request_id,
+                        usage_iteration=iteration,
+                        usage_conversation_key=usage_conversation_key,
                     ),
                     timeout=120.0,
                 )
@@ -576,6 +599,8 @@ class AgentLoop:
                             "assistant_content": response.content,
                             "reasoning_content": response.reasoning_content,
                             "original_user_message": original_user_message,
+                            "usage_session_id": usage_session_id,
+                            "usage_last_iteration": iteration,
                             "action_id": action_id,
                             "created_at": datetime.now().isoformat(),
                         }
@@ -682,16 +707,23 @@ class AgentLoop:
         # Agent loop (limited for announce handling)
         iteration = 0
         final_content = None
+        usage_session_id = secrets.token_hex(16)
+        usage_conversation_key = session_key
         
         while iteration < self.max_iterations:
             iteration += 1
+            usage_request_id = secrets.token_hex(16)
             
             try:
                 response = await asyncio.wait_for(
                     self.provider.chat(
                         messages=messages,
                         tools=self.tools.get_definitions(),
-                        model=self.model
+                        model=self.model,
+                        usage_session_id=usage_session_id,
+                        usage_request_id=usage_request_id,
+                        usage_iteration=iteration,
+                        usage_conversation_key=usage_conversation_key,
                     ),
                     timeout=120.0,
                 )
