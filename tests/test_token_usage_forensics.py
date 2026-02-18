@@ -244,3 +244,78 @@ def test_usage_session_cli_smoke(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "req-1" in result.output
     assert "req-2" in result.output
 
+
+def test_forensics_usage_sessions_alias_cli_smoke(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CLI alias forensics usage sessions renders same report."""
+    monkeypatch.setattr(
+        "nanobot.memory.get_token_usage_sessions",
+        lambda days, top: [
+            {
+                "session_id": "sess-forensics-1",
+                "conversation_key": "telegram:808",
+                "llm_calls": 3,
+                "total_tokens": 987,
+                "cost_usd": 0.123,
+                "first_timestamp": "2026-02-18T15:00:00",
+                "last_timestamp": "2026-02-18T15:01:00",
+            }
+        ],
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["forensics", "usage", "sessions", "-d", "7", "--top", "20"],
+        env={"COLUMNS": "220"},
+    )
+
+    assert result.exit_code == 0
+    assert "Token Usage Sessions" in result.output
+    assert "sess-for" in result.output
+    assert "telegram" in result.output
+
+
+def test_forensics_usage_session_alias_cli_smoke(monkeypatch: pytest.MonkeyPatch) -> None:
+    """CLI alias forensics usage session renders details view."""
+    monkeypatch.setattr(
+        "nanobot.memory.get_token_usage_session_details",
+        lambda session_id: {
+            "session_id": session_id,
+            "conversation_key": "telegram:909",
+            "llm_calls": 1,
+            "total_tokens": 222,
+            "cost_usd": 0.077,
+            "first_timestamp": "2026-02-18T16:00:00",
+            "last_timestamp": "2026-02-18T16:00:01",
+            "by_model": [
+                {
+                    "model": "test-model",
+                    "llm_calls": 1,
+                    "total_tokens": 222,
+                    "cost_usd": 0.077,
+                }
+            ],
+            "calls": [
+                {
+                    "timestamp": "2026-02-18T16:00:01",
+                    "request_id": "req-forensics-1",
+                    "iteration": 1,
+                    "model": "test-model",
+                    "total_tokens": 222,
+                    "cost_usd": 0.077,
+                }
+            ],
+        },
+    )
+
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        ["forensics", "usage", "session", "sess-forensics-2"],
+        env={"COLUMNS": "220"},
+    )
+
+    assert result.exit_code == 0
+    assert "sess-forensics-2" in result.output
+    assert "req-forens" in result.output
+

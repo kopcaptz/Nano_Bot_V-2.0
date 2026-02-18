@@ -805,6 +805,9 @@ def cron_run(
 
 usage_app = typer.Typer(help="Inspect token usage forensics")
 app.add_typer(usage_app, name="usage")
+forensics_app = typer.Typer(help="Inspect forensic reports")
+app.add_typer(forensics_app, name="forensics")
+forensics_app.add_typer(usage_app, name="usage")
 
 
 @usage_app.command("sessions")
