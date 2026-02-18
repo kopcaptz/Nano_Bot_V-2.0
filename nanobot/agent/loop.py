@@ -393,6 +393,7 @@ class AgentLoop:
         # Save to session
         session.add_message("user", msg.content)
         session.add_message("assistant", final_content)
+        await self.sessions.maybe_summarize(session, self.provider)
         self.sessions.save(session)
         
         return OutboundMessage(
@@ -460,6 +461,7 @@ class AgentLoop:
             )
             session.add_message("assistant", "Tool execution cancelled by user.")
             session.pending_confirmation = None
+            await self.sessions.maybe_summarize(session, self.provider)
             self.sessions.save(session)
 
             await self.bus.publish_outbound(OutboundMessage(
@@ -626,6 +628,7 @@ class AgentLoop:
 
         session.add_message("user", original_user_message)
         session.add_message("assistant", final_content)
+        await self.sessions.maybe_summarize(session, self.provider)
         self.sessions.save(session)
 
         return OutboundMessage(
@@ -771,6 +774,7 @@ class AgentLoop:
         # Save to session (mark as system message in history)
         session.add_message("user", f"[System: {msg.sender_id}] {msg.content}")
         session.add_message("assistant", final_content)
+        await self.sessions.maybe_summarize(session, self.provider)
         self.sessions.save(session)
         
         return OutboundMessage(
