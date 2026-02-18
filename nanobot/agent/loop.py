@@ -12,6 +12,7 @@ from loguru import logger
 
 from nanobot.bus.events import InboundMessage, OutboundMessage
 from nanobot.bus.queue import MessageBus
+from nanobot.agents.navigator import NavigatorAgent, NavigatorResult
 from nanobot.providers.base import LLMProvider
 from nanobot.agent.context import ContextBuilder
 from nanobot.agent.reflection import Reflection
@@ -58,8 +59,9 @@ class AgentLoop:
         cron_service: "CronService | None" = None,
         restrict_to_workspace: bool = False,
         session_manager: SessionManager | None = None,
+        navigator_config: "NavigatorConfig | None" = None,
     ):
-        from nanobot.config.schema import ExecToolConfig
+        from nanobot.config.schema import ExecToolConfig, NavigatorConfig
         from nanobot.cron.service import CronService
         self.bus = bus
         self.provider = provider
@@ -70,6 +72,14 @@ class AgentLoop:
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
         self.restrict_to_workspace = restrict_to_workspace
+        # Keep navigator opt-in for legacy call sites that do not pass config.
+        self.navigator_config = navigator_config or NavigatorConfig(enabled=False)
+        self.navigator = NavigatorAgent(
+            provider=provider,
+            model=self.navigator_config.model,
+            timeout_seconds=self.navigator_config.slm_timeout_seconds,
+            log_path=self.navigator_config.log_path,
+        )
 
         # VectorDBManager + SkillManager для семантического подбора навыков
         db_path = Path.home() / ".nanobot" / "chroma"
@@ -209,6 +219,19 @@ class AgentLoop:
         if session.pending_confirmation:
             return await self._handle_confirmation(session, msg)
 
+        navigator_result: NavigatorResult | None = None
+        navigator_cfg = self._navigator_config_dict()
+        if self.navigator.should_run(msg.session_key, navigator_cfg):
+            try:
+                navigator_result = await self.navigator.analyze(
+                    session_history=session.messages,
+                    user_message=msg.content,
+                    config=navigator_cfg,
+                    conversation_id=msg.session_key,
+                )
+            except Exception as e:
+                logger.warning(f"Navigator analyze failed: {e}")
+
         # Update tool contexts
         message_tool = self.tools.get("message")
         if isinstance(message_tool, MessageTool):
@@ -230,6 +253,9 @@ class AgentLoop:
             channel=msg.channel,
             chat_id=msg.chat_id,
         )
+
+        if navigator_result and navigator_result.hint:
+            self._inject_navigator_hint(messages, navigator_result)
         
         # Agent loop
         iteration = 0
@@ -401,6 +427,31 @@ class AgentLoop:
             content=final_content,
             metadata=msg.metadata or {},  # Pass through for channel-specific needs (e.g. Slack thread_ts)
         )
+
+    def _navigator_config_dict(self) -> dict[str, Any]:
+        """Convert navigator config model into a plain dict."""
+        if hasattr(self.navigator_config, "model_dump"):
+            return self.navigator_config.model_dump()
+        if isinstance(self.navigator_config, dict):
+            return self.navigator_config
+        return {}
+
+    def _inject_navigator_hint(
+        self,
+        messages: list[dict[str, Any]],
+        navigator_result: NavigatorResult,
+    ) -> None:
+        """Append navigator hint block into the system prompt."""
+        navigator_block = (
+            "<navigator_hint>\n"
+            f"Route: {navigator_result.route}. Focus: {navigator_result.hint}.\n"
+            "</navigator_hint>"
+        )
+        if messages and messages[0].get("role") == "system":
+            base = str(messages[0].get("content", ""))
+            messages[0]["content"] = f"{base}\n\n{navigator_block}"
+            return
+        messages.insert(0, {"role": "system", "content": navigator_block})
 
     async def _handle_confirmation(self, session: Session, msg: InboundMessage) -> OutboundMessage | None:
         """Handle user confirmation for pending tool execution."""

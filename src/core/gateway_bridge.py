@@ -57,6 +57,7 @@ def _get_agent(workspace: Optional[Path] = None) -> object:
             cron_service=None,
             restrict_to_workspace=config.tools.restrict_to_workspace,
             session_manager=session_manager,
+            navigator_config=config.navigator,
         )
 
         _agent = agent

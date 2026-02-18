@@ -10,6 +10,7 @@ from dashboard.utils.memory import (
     get_reflections,
     get_journal,
 )
+from dashboard.utils.navigator import get_navigator_session_metrics, load_navigator_events
 from dashboard.utils.fake_data import fake_sessions, fake_token_usage, fake_facts, fake_reflections
 
 __all__ = [
@@ -22,6 +23,8 @@ __all__ = [
     "get_facts_categories",
     "get_reflections",
     "get_journal",
+    "get_navigator_session_metrics",
+    "load_navigator_events",
     "fake_sessions",
     "fake_token_usage",
     "fake_facts",
