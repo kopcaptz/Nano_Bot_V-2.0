@@ -799,6 +799,75 @@ def cron_run(
 
 
 # ============================================================================
+# Usage / Token Statistics
+# ============================================================================
+
+usage_app = typer.Typer(help="Token usage statistics from memory.db")
+
+
+@usage_app.command("sessions")
+def usage_sessions(
+    days: int = typer.Option(1, "-d", "--days", help="Number of days to show"),
+):
+    """Show token usage by day (from token_usage table)."""
+    from nanobot.memory import get_token_usage_today, get_token_usage_period
+    from nanobot.memory.db import init_db
+
+    init_db()
+    if days <= 1:
+        stats = get_token_usage_today()
+        if not stats or stats.get("total_tokens", 0) == 0:
+            console.print("[dim]No token usage recorded today.[/dim]")
+            return
+        table = Table(title=f"Token Usage — {stats['date']}")
+        table.add_column("Model", style="cyan")
+        table.add_column("Prompt", justify="right")
+        table.add_column("Completion", justify="right")
+        table.add_column("Total", justify="right")
+        table.add_column("Requests", justify="right")
+        for m in stats.get("by_model", []):
+            table.add_row(
+                m.get("model", "?"),
+                f"{m.get('prompt_tokens', 0):,}",
+                f"{m.get('completion_tokens', 0):,}",
+                f"{m.get('total_tokens', 0):,}",
+                str(m.get("requests", 0)),
+            )
+        table.add_row(
+            "[bold]Total[/bold]",
+            f"{stats.get('prompt_tokens', 0):,}",
+            f"{stats.get('completion_tokens', 0):,}",
+            f"{stats.get('total_tokens', 0):,}",
+            str(stats.get("requests", 0)),
+            style="bold",
+        )
+        console.print(table)
+    else:
+        period = get_token_usage_period(days)
+        if not period:
+            console.print(f"[dim]No token usage in the last {days} days.[/dim]")
+            return
+        table = Table(title=f"Token Usage — Last {days} days")
+        table.add_column("Date", style="cyan")
+        table.add_column("Prompt", justify="right")
+        table.add_column("Completion", justify="right")
+        table.add_column("Total", justify="right")
+        table.add_column("Requests", justify="right")
+        for row in period:
+            table.add_row(
+                row.get("date", "?"),
+                f"{row.get('prompt_tokens', 0):,}",
+                f"{row.get('completion_tokens', 0):,}",
+                f"{row.get('total_tokens', 0):,}",
+                str(row.get("requests", 0)),
+            )
+        console.print(table)
+
+
+app.add_typer(usage_app, name="usage")
+
+
+# ============================================================================
 # Status Commands
 # ============================================================================
 
