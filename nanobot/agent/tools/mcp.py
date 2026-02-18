@@ -54,7 +54,7 @@ class MCPCallTool(Tool):
 
     @property
     def policy(self) -> ToolPolicy:
-        return ToolPolicy.CONFIRM
+        return ToolPolicy.REQUIRE_CONFIRMATION
 
     async def execute(
         self,

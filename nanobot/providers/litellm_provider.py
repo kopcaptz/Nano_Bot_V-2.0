@@ -153,13 +153,30 @@ class LiteLLMProvider(LLMProvider):
 
         try:
             response = await acompletion(**kwargs)
-            return self._parse_response(response)
+            result = self._parse_response(response)
+            if result.usage:
+                self._track_tokens(model, result.usage)
+            return result
         except Exception as e:
             # Return error as content for graceful handling
             return LLMResponse(
                 content=f"Error calling LLM: {str(e)}",
                 finish_reason="error",
             )
+
+    def _track_tokens(self, model: str, usage: dict[str, int]) -> None:
+        """Persist token usage in SQLite (best effort)."""
+        try:
+            from nanobot.memory import add_token_usage
+            add_token_usage(
+                model=model,
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0),
+                total_tokens=usage.get("total_tokens", 0),
+            )
+        except Exception:
+            # Usage tracking must never break user requests
+            pass
     
     def _parse_response(self, response: Any) -> LLMResponse:
         """Parse LiteLLM response into our standard format."""
