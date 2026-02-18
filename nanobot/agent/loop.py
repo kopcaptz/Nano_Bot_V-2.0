@@ -28,6 +28,7 @@ from nanobot.agent.tools.message import MessageTool
 from nanobot.agent.tools.spawn import SpawnTool
 from nanobot.agent.tools.cron import CronTool
 from nanobot.agent.tools.memory import MemorySearchTool
+from nanobot.agent.tools.mcp import MCPCallTool
 from nanobot.agent.subagent import SubagentManager
 from nanobot.memory.db import add_reflection
 from nanobot.session.manager import Session, SessionManager
@@ -140,6 +141,9 @@ class AgentLoop:
         # Cron tool (for scheduling)
         if self.cron_service:
             self.tools.register(CronTool(self.cron_service))
+
+        # MCP bridge (manus-mcp-cli)
+        self.tools.register(MCPCallTool())
     
     async def run(self) -> None:
         """Run the agent loop, processing messages from the bus."""
