@@ -3,8 +3,10 @@
 import asyncio
 import copy
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
+import secrets
 
 from loguru import logger
 
@@ -299,6 +301,7 @@ class AgentLoop:
 
                     if policy == ToolPolicy.REQUIRE_CONFIRMATION:
                         # Ask user for confirmation
+                        action_id = secrets.token_hex(8)
                         session.pending_confirmation = {
                             "tool_name": tool_name,
                             "tool_args": tool_args,
@@ -308,14 +311,18 @@ class AgentLoop:
                             "assistant_content": response.content,
                             "reasoning_content": response.reasoning_content,
                             "original_user_message": msg.content,
+                            "action_id": action_id,
+                            "created_at": datetime.now().isoformat(),
                         }
                         self.sessions.save(session)
 
+                        meta = dict(msg.metadata or {})
+                        meta["confirmation_action_id"] = action_id
                         await self.bus.publish_outbound(OutboundMessage(
                             channel=msg.channel,
                             chat_id=msg.chat_id,
-                            content=f"⚠️ Confirmation required:\n\nTool: `{tool_name}`\nArguments: `{args_str[:500]}`\n\nProceed? (yes/no)",
-                            metadata=msg.metadata or {},
+                            content=f"⚠️ Confirmation required:\n\nTool: `{tool_name}`\nArguments: `{args_str[:500]}`\n\nProceed?",
+                            metadata=meta,
                         ))
                         return None
 
@@ -458,6 +465,19 @@ class AgentLoop:
                 metadata=msg.metadata or {},
             ))
             return None
+
+        elif user_response in ["later", "позже", "п"]:
+            # User chose "later"
+            session.pending_confirmation = None
+            self.sessions.save(session)
+
+            await self.bus.publish_outbound(OutboundMessage(
+                channel=msg.channel,
+                chat_id=msg.chat_id,
+                content="OK, I'll wait. Repeat the request when you're ready to proceed.",
+                metadata=msg.metadata or {},
+            ))
+            return None
         else:
             # Invalid response - ask again
             await self.bus.publish_outbound(OutboundMessage(
@@ -542,6 +562,7 @@ class AgentLoop:
                         continue
 
                     if policy == ToolPolicy.REQUIRE_CONFIRMATION:
+                        action_id = secrets.token_hex(8)
                         session.pending_confirmation = {
                             "tool_name": tool_name,
                             "tool_args": tool_args,
@@ -551,14 +572,18 @@ class AgentLoop:
                             "assistant_content": response.content,
                             "reasoning_content": response.reasoning_content,
                             "original_user_message": original_user_message,
+                            "action_id": action_id,
+                            "created_at": datetime.now().isoformat(),
                         }
                         self.sessions.save(session)
 
+                        meta = dict(msg.metadata or {})
+                        meta["confirmation_action_id"] = action_id
                         await self.bus.publish_outbound(OutboundMessage(
                             channel=msg.channel,
                             chat_id=msg.chat_id,
-                            content=f"⚠️ Confirmation required:\n\nTool: `{tool_name}`\nArguments: `{args_str[:500]}`\n\nProceed? (yes/no)",
-                            metadata=msg.metadata or {},
+                            content=f"⚠️ Confirmation required:\n\nTool: `{tool_name}`\nArguments: `{args_str[:500]}`\n\nProceed?",
+                            metadata=meta,
                         ))
                         return None
 

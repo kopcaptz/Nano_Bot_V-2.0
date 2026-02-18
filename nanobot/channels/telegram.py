@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
+from datetime import datetime
 from typing import TYPE_CHECKING
 
 from loguru import logger
-from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
+from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, ReplyKeyboardRemove, Update
 from telegram.ext import Application, CallbackQueryHandler, CommandHandler, ContextTypes, MessageHandler, filters
 
 from nanobot.bus.events import OutboundMessage
@@ -25,7 +27,22 @@ def _markdown_to_telegram_html(text: str) -> str:
     """
     if not text:
         return ""
-    
+
+    # 0. Rich formatting: emoji status, progress bars (before code block extraction)
+    text = re.sub(r":ok:", "✅", text)
+    text = re.sub(r":fail:", "❌", text)
+    text = re.sub(r":pending:", "⏳", text)
+    text = re.sub(r":error:", "❌", text)
+    text = re.sub(r":running:", "🔄", text)
+    # [progress:80] -> ████████░░ 80%
+    def _progress_bar(m: re.Match) -> str:
+        pct = int(m.group(1))
+        pct = max(0, min(100, pct))
+        filled = int(10 * pct / 100)
+        bar = "█" * filled + "░" * (10 - filled)
+        return f"{bar} {pct}%"
+    text = re.sub(r"\[progress:(\d+)\]", _progress_bar, text)
+
     # 1. Extract and protect code blocks (preserve content from other processing)
     code_blocks: list[str] = []
     def save_code_block(m: re.Match) -> str:
@@ -66,7 +83,27 @@ def _markdown_to_telegram_html(text: str) -> str:
     
     # 10. Bullet lists - item -> • item
     text = re.sub(r'^[-*]\s+', '• ', text, flags=re.MULTILINE)
-    
+
+    # 10b. Markdown tables -> HTML table
+    table_pattern = r'(\|[^\n]+\|\n)((?:\|[-:\s|]+\|\n)?(?:\|[^\n]+\|\n?)*)'
+    def _table_replacer(m: re.Match) -> str:
+        header_line = m.group(1)
+        body = m.group(2)
+        cells = [c.strip() for c in header_line.split("|") if c.strip()]
+        if not cells:
+            return m.group(0)
+        header = "<tr>" + "".join(f"<th>{c}</th>" for c in cells) + "</tr>"
+        rows = []
+        for line in body.strip().split("\n"):
+            if re.match(r'^\|[-:\s|]+\|', line):
+                continue
+            cells = [c.strip() for c in line.split("|")[1:-1]]
+            if cells:
+                row = "<tr>" + "".join(f"<td>{c}</td>" for c in cells) + "</tr>"
+                rows.append(row)
+        return f"<table border=\"1\">{header}{''.join(rows)}</table>"
+    text = re.sub(table_pattern, _table_replacer, text)
+
     # 11. Restore inline code with HTML tags
     for i, code in enumerate(inline_codes):
         # Escape HTML in code content
@@ -108,6 +145,9 @@ class TelegramChannel(BaseChannel):
     MENU_STATE_REFLECTION = "commands_reflection"
     MENU_STATE_MEMORY = "commands_memory"
     MENU_STATE_TOOLS = "commands_tools"
+    MENU_STATE_FILES = "files"
+    MENU_STATE_GIT = "git"
+    MENU_STATE_SKILLS = "skills"
     MENU_STATE_CONFIRM = "command_confirm"
 
     CMD_MENU_MAIN = "cmd_menu_main"
@@ -115,10 +155,19 @@ class TelegramChannel(BaseChannel):
     CMD_MENU_REFLECTION = "cmd_menu_reflection"
     CMD_MENU_MEMORY = "cmd_menu_memory"
     CMD_MENU_TOOLS = "cmd_menu_tools"
+    CMD_MENU_FILES = "quick:files"
+    CMD_MENU_GIT = "quick:git"
+    CMD_MENU_SKILLS = "quick:skills"
     CMD_SELECT_PREFIX = "cmd_select:"
     CMD_EXEC_PREFIX = "cmd_exec:"
     CMD_BACK = "cmd_back"
     CMD_CANCEL = "cmd_cancel"
+
+    # Confirmation callback prefix (cfm:yes:id, cfm:no:id, cfm:later:id)
+    CONFIRM_PREFIX = "cfm:"
+    CONFIRM_TIMEOUT_SEC = 300  # 5 minutes
+    # Error retry callback prefix (err:retry:id, err:cancel:id)
+    ERR_PREFIX = "err:"
 
     COMMANDS = {
         MENU_STATE_REFLECTION: [
@@ -136,6 +185,26 @@ class TelegramChannel(BaseChannel):
             ("weather", "/weather", "🌤 Погода (/weather)"),
             ("vision", "/vision", "👁 Vision (скриншот)"),
             ("cron_list", "/cron list", "⏰ Cron list (/cron list)"),
+        ],
+        MENU_STATE_FILES: [
+            ("list_files", "покажи файлы в текущей директории", "📋 Список"),
+            ("read_file", "прочитай файл", "👁️ Просмотр"),
+            ("edit_file", "отредактируй файл", "✏️ Редактировать"),
+            ("send_file", "отправь файл", "📤 Отправить"),
+            ("delete_file", "удали файл", "🗑️ Удалить"),
+        ],
+        MENU_STATE_GIT: [
+            ("git_status", "git status", "📊 Status"),
+            ("git_commit", "git commit", "📝 Commit"),
+            ("git_branch", "git branch", "🌿 Branch"),
+            ("git_pr", "создай pull request", "🔀 PR"),
+            ("git_tag", "git tag", "🏷️ Tag"),
+        ],
+        MENU_STATE_SKILLS: [
+            ("skill_search", "найди навыки", "🎯 Поиск"),
+            ("skill_create", "создай навык", "➕ Создать"),
+            ("skill_list", "список навыков", "📋 Список"),
+            ("skill_settings", "настройки навыков", "⚙️ Настройки"),
         ],
     }
 
@@ -155,6 +224,8 @@ class TelegramChannel(BaseChannel):
         self._app: Application | None = None
         self._chat_ids: dict[str, int] = {}  # Map sender_id to chat_id for replies
         self._typing_tasks: dict[str, asyncio.Task] = {}  # chat_id -> typing loop task
+        self._last_message_id: dict[str, int] = {}  # chat_id -> last sent message_id (for progress edits)
+        self._pending_retry: dict[str, dict] = {}  # action_id -> {retry_content, chat_id, created_at}
 
     def _split_message(self, text: str, max_length: int = 4000) -> list[str]:
         """Split long text into Telegram-safe chunks on natural boundaries."""
@@ -264,41 +335,93 @@ class TelegramChannel(BaseChannel):
         if not self._app:
             logger.warning("Telegram bot not running")
             return False
-        
-        # Stop typing indicator for this chat
+
         self._stop_typing(msg.chat_id)
-        
+
         try:
             chat_id = int(msg.chat_id)
         except ValueError:
             logger.error(f"Invalid chat_id: {msg.chat_id}")
             return False
 
-        cleaned_text = self._clean_response(msg.content)
-        parts = self._split_message(cleaned_text, self.MAX_MESSAGE_LENGTH)
+        meta = msg.metadata or {}
+        reply_markup = None
+        if action_id := meta.get("confirmation_action_id"):
+            reply_markup = self.create_confirmation_keyboard(action_id)
+        elif suggested := meta.get("suggested_actions"):
+            rows = []
+            for item in (suggested[:4] if isinstance(suggested, list) else []):
+                if isinstance(item, dict):
+                    lbl, cb = item.get("label", ""), item.get("callback", "")
+                else:
+                    lbl, cb = (item[0], item[1]) if len(item) >= 2 else ("", "")
+                if lbl and cb:
+                    rows.append([InlineKeyboardButton(lbl, callback_data=cb)])
+            if rows:
+                reply_markup = InlineKeyboardMarkup(rows)
+        elif error_action_id := meta.get("error_action_id"):
+            reply_markup = self.create_retry_keyboard(error_action_id)
+            retry_payload = meta.get("retry_payload", "")
+            self._pending_retry[error_action_id] = {
+                "retry_content": retry_payload,
+                "chat_id": str(chat_id),
+                "created_at": datetime.now().isoformat(),
+            }
 
-        for i, part in enumerate(parts):
+        cleaned_text = self._clean_response(msg.content)
+        if meta.get("show_progress_bar") and "progress" in meta:
+            pct = int(meta.get("progress", 0))
+            pct = max(0, min(100, pct))
+            filled = int(10 * pct / 100)
+            bar = "█" * filled + "░" * (10 - filled)
+            cleaned_text = f"{cleaned_text}\n\n{bar} {pct}%"
+
+        edit_msg_id = meta.get("edit_message_id")
+        if meta.get("edit_last_message") and not edit_msg_id:
+            edit_msg_id = self._last_message_id.get(str(chat_id))
+
+        if edit_msg_id:
             try:
-                html_content = _markdown_to_telegram_html(part)
-                await self._app.bot.send_message(
+                html_content = _markdown_to_telegram_html(cleaned_text)
+                await self._app.bot.edit_message_text(
                     chat_id=chat_id,
+                    message_id=int(edit_msg_id),
                     text=html_content,
                     parse_mode="HTML",
+                    reply_markup=reply_markup,
                 )
             except Exception as e:
-                # Fallback to plain text if HTML parsing fails
-                logger.warning(f"HTML parse failed, falling back to plain text: {e}")
-                try:
-                    await self._app.bot.send_message(
-                        chat_id=chat_id,
-                        text=part,
-                    )
-                except Exception as e2:
-                    logger.error(f"Error sending Telegram message: {e2}")
-                    return False
+                logger.warning(f"Edit message failed, sending new: {e}")
+                edit_msg_id = None
 
-            if i < len(parts) - 1:
-                await asyncio.sleep(0.5)
+        if not edit_msg_id:
+            parts = self._split_message(cleaned_text, self.MAX_MESSAGE_LENGTH)
+            for i, part in enumerate(parts):
+                is_last = i == len(parts) - 1
+                kbd = reply_markup if (is_last and reply_markup) else None
+                try:
+                    html_content = _markdown_to_telegram_html(part)
+                    sent = await self._app.bot.send_message(
+                        chat_id=chat_id,
+                        text=html_content,
+                        parse_mode="HTML",
+                        reply_markup=kbd,
+                    )
+                    self._last_message_id[str(chat_id)] = sent.message_id
+                except Exception as e:
+                    logger.warning(f"HTML parse failed, falling back to plain text: {e}")
+                    try:
+                        sent = await self._app.bot.send_message(
+                            chat_id=chat_id,
+                            text=part,
+                            reply_markup=kbd,
+                        )
+                        self._last_message_id[str(chat_id)] = sent.message_id
+                    except Exception as e2:
+                        logger.error(f"Error sending Telegram message: {e2}")
+                        return False
+                if i < len(parts) - 1:
+                    await asyncio.sleep(0.5)
 
         return True
     
@@ -306,15 +429,27 @@ class TelegramChannel(BaseChannel):
         """Handle /start command."""
         if not update.message or not update.effective_user:
             return
-        
+
         user = update.effective_user
         self._set_menu_state(context, self.MENU_STATE_MAIN, reset_stack=True)
+
+        ux_level = getattr(self.config, "ux_level", "advanced")
         await update.message.reply_text(
             f"👋 Hi {user.first_name}! I'm nanobot.\n\n"
             "Send me a message and I'll respond!\n"
             "Type /help to see available commands.",
             reply_markup=self._build_main_keyboard(),
+            parse_mode="HTML",
         )
+
+        # Quick reply keyboard (persistent) for standard/advanced
+        if ux_level != "minimal":
+            quick_kbd = self._build_quick_reply_keyboard()
+            if quick_kbd:
+                await update.message.reply_text(
+                    "Быстрые действия:",
+                    reply_markup=quick_kbd,
+                )
 
     def _set_menu_state(
         self,
@@ -348,15 +483,21 @@ class TelegramChannel(BaseChannel):
 
     def _build_main_keyboard(self) -> InlineKeyboardMarkup:
         """Build main inline menu."""
-        return InlineKeyboardMarkup(
+        ux_level = getattr(self.config, "ux_level", "advanced")
+        rows = [
             [
-                [
-                    InlineKeyboardButton("🚀 Старт", callback_data=self.CMD_MENU_MAIN),
-                    InlineKeyboardButton("📋 Команды", callback_data=self.CMD_MENU_COMMANDS),
-                    InlineKeyboardButton("❓ Помощь", callback_data="help"),
-                ]
+                InlineKeyboardButton("🚀 Старт", callback_data=self.CMD_MENU_MAIN),
+                InlineKeyboardButton("📋 Команды", callback_data=self.CMD_MENU_COMMANDS),
+                InlineKeyboardButton("❓ Помощь", callback_data="help"),
             ]
-        )
+        ]
+        if ux_level != "minimal":
+            rows.append([
+                InlineKeyboardButton("📁 Файлы", callback_data=self.CMD_MENU_FILES),
+                InlineKeyboardButton("🔧 Git", callback_data=self.CMD_MENU_GIT),
+                InlineKeyboardButton("🤖 Навыки", callback_data=self.CMD_MENU_SKILLS),
+            ])
+        return InlineKeyboardMarkup(rows)
 
     def _build_commands_keyboard(self) -> InlineKeyboardMarkup:
         """Build top-level commands category menu."""
@@ -365,6 +506,11 @@ class TelegramChannel(BaseChannel):
                 [InlineKeyboardButton("🔍 Рефлексия", callback_data=self.CMD_MENU_REFLECTION)],
                 [InlineKeyboardButton("🧠 Память", callback_data=self.CMD_MENU_MEMORY)],
                 [InlineKeyboardButton("🛠 Инструменты", callback_data=self.CMD_MENU_TOOLS)],
+                [
+                    InlineKeyboardButton("📁 Файлы", callback_data=self.CMD_MENU_FILES),
+                    InlineKeyboardButton("🔧 Git", callback_data=self.CMD_MENU_GIT),
+                    InlineKeyboardButton("🤖 Навыки", callback_data=self.CMD_MENU_SKILLS),
+                ],
                 [InlineKeyboardButton("⬅️ Назад", callback_data=self.CMD_BACK)],
             ]
         )
@@ -391,6 +537,50 @@ class TelegramChannel(BaseChannel):
             ]
         )
 
+    def create_confirmation_keyboard(self, action_id: str, show_info: bool = True) -> InlineKeyboardMarkup:
+        """Build inline confirmation keyboard: [✅ Да] [❌ Нет] [⏸️ Позже] [ℹ️ Подробнее]."""
+        row1 = [
+            InlineKeyboardButton("✅ Да", callback_data=f"{self.CONFIRM_PREFIX}yes:{action_id}"),
+            InlineKeyboardButton("❌ Нет", callback_data=f"{self.CONFIRM_PREFIX}no:{action_id}"),
+            InlineKeyboardButton("⏸️ Позже", callback_data=f"{self.CONFIRM_PREFIX}later:{action_id}"),
+        ]
+        if show_info:
+            row1.append(InlineKeyboardButton("ℹ️ Подробнее", callback_data=f"{self.CONFIRM_PREFIX}info:{action_id}"))
+        return InlineKeyboardMarkup([row1])
+
+    def create_retry_keyboard(self, action_id: str) -> InlineKeyboardMarkup:
+        """Build error retry keyboard: [🔄 Повторить] [❌ Отмена]."""
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("🔄 Повторить", callback_data=f"{self.ERR_PREFIX}retry:{action_id}"),
+                InlineKeyboardButton("❌ Отмена", callback_data=f"{self.ERR_PREFIX}cancel:{action_id}"),
+            ]
+        ])
+
+    # Quick reply button label -> content to send to agent
+    QUICK_REPLIES: list[tuple[str, str]] = [
+        ("📁 Файлы", "покажи файлы в текущей директории"),
+        ("🔧 Git", "git status"),
+        ("🤖 Навыки", "список навыков"),
+        ("📊 Статус", "статус проекта"),
+        ("⚙️ Настройки", "помощь"),
+    ]
+
+    def _resolve_quick_reply(self, content: str) -> str:
+        """If content matches a quick reply button, return mapped content; else return original."""
+        for label, mapped in self.QUICK_REPLIES:
+            if content.strip() == label:
+                logger.info("telegram_quick_reply: label=%s -> content=%s", label, mapped)
+                return mapped
+        return content
+
+    def _build_quick_reply_keyboard(self) -> ReplyKeyboardMarkup | None:
+        """Build persistent quick reply keyboard. None if ux_level is minimal."""
+        if getattr(self.config, "ux_level", "advanced") == "minimal":
+            return None
+        keyboard = [[KeyboardButton(label)] for label, _ in self.QUICK_REPLIES]
+        return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, is_persistent=True)
+
     def _build_command_hint(self, command: str) -> str:
         """Return hint for commands that require arguments."""
         if command.startswith("/remember"):
@@ -409,32 +599,69 @@ class TelegramChannel(BaseChannel):
                     return command
         return None
 
+    BREADCRUMB_LABELS: dict[str, str] = {
+        "main": "Главная",
+        "commands": "Команды",
+        "commands_reflection": "Рефлексия",
+        "commands_memory": "Память",
+        "commands_tools": "Инструменты",
+        "files": "Файлы",
+        "git": "Git",
+        "skills": "Навыки",
+    }
+
+    def _get_breadcrumb(self, context: ContextTypes.DEFAULT_TYPE) -> str:
+        """Build breadcrumb string: Главная > Git > Status."""
+        stack = context.user_data.get(self.MENU_STACK_KEY, [])
+        current = context.user_data.get(self.MENU_STATE_KEY, self.MENU_STATE_MAIN)
+        parts = stack + [current]
+        labels = [self.BREADCRUMB_LABELS.get(p, p) for p in parts]
+        return " > ".join(labels) if labels else "Главная"
+
     def _render_menu_screen(self, state: str, context: ContextTypes.DEFAULT_TYPE) -> tuple[str, InlineKeyboardMarkup]:
         """Build menu text and keyboard by FSM state."""
+        ux_level = getattr(self.config, "ux_level", "advanced")
+        breadcrumb = f"{self._get_breadcrumb(context)}\n\n" if ux_level == "advanced" else ""
+
         if state == self.MENU_STATE_MAIN:
             return (
-                "Главное меню:\nВыберите действие.",
+                breadcrumb + "Главное меню:\nВыберите действие.",
                 self._build_main_keyboard(),
             )
         if state == self.MENU_STATE_COMMANDS:
             return (
-                "📋 <b>Команды</b>\nВыберите категорию:",
+                breadcrumb + "📋 <b>Команды</b>\nВыберите категорию:",
                 self._build_commands_keyboard(),
             )
         if state == self.MENU_STATE_REFLECTION:
             return (
-                "🔍 <b>Рефлексия</b>\nВыберите команду:",
+                breadcrumb + "🔍 <b>Рефлексия</b>\nВыберите команду:",
                 self._build_category_keyboard(self.MENU_STATE_REFLECTION),
             )
         if state == self.MENU_STATE_MEMORY:
             return (
-                "🧠 <b>Память</b>\nВыберите команду:",
+                breadcrumb + "🧠 <b>Память</b>\nВыберите команду:",
                 self._build_category_keyboard(self.MENU_STATE_MEMORY),
             )
         if state == self.MENU_STATE_TOOLS:
             return (
-                "🛠 <b>Инструменты</b>\nВыберите команду:",
+                breadcrumb + "🛠 <b>Инструменты</b>\nВыберите команду:",
                 self._build_category_keyboard(self.MENU_STATE_TOOLS),
+            )
+        if state == self.MENU_STATE_FILES:
+            return (
+                breadcrumb + "📁 <b>Файлы</b>\nВыберите действие:",
+                self._build_category_keyboard(self.MENU_STATE_FILES),
+            )
+        if state == self.MENU_STATE_GIT:
+            return (
+                breadcrumb + "🔧 <b>Git</b>\nВыберите действие:",
+                self._build_category_keyboard(self.MENU_STATE_GIT),
+            )
+        if state == self.MENU_STATE_SKILLS:
+            return (
+                breadcrumb + "🤖 <b>Навыки</b>\nВыберите действие:",
+                self._build_category_keyboard(self.MENU_STATE_SKILLS),
             )
 
         pending_command = context.user_data.get(self.MENU_PENDING_COMMAND_KEY)
@@ -457,8 +684,151 @@ class TelegramChannel(BaseChannel):
         context.user_data[self.MENU_MESSAGE_ID_KEY] = query.message.message_id if query.message else None
         callback_data = query.data
         user = update.effective_user
+        chat_id = str(query.message.chat_id) if query.message else ""
+        sender_id = str(user.id)
+        if user.username:
+            sender_id = f"{sender_id}|{user.username}"
+
+        # --- Confirmation callbacks (cfm:yes|no|later|info:action_id) ---
+        if callback_data.startswith(self.CONFIRM_PREFIX):
+            parts = callback_data[len(self.CONFIRM_PREFIX):].split(":", 1)
+            if len(parts) != 2:
+                logger.warning("telegram_callback: invalid cfm format data=%s", callback_data)
+                return
+            action, action_id = parts[0], parts[1]
+            logger.info(
+                "telegram_callback: action=%s action_id=%s chat_id=%s user_id=%s",
+                action, action_id, chat_id, user.id,
+            )
+
+            session_key = f"{self.name}:{chat_id}"
+            session = self.session_manager.get_or_create(session_key) if self.session_manager else None
+            if not session or not session.pending_confirmation:
+                await query.edit_message_text(
+                    "⏱ Истекло время подтверждения. Повторите запрос.",
+                    reply_markup=None,
+                )
+                logger.warning("telegram_callback: no pending confirmation for action_id=%s", action_id)
+                return
+
+            pending = session.pending_confirmation
+            if pending.get("action_id") != action_id:
+                await query.edit_message_text(
+                    "⏱ Истекло время подтверждения. Повторите запрос.",
+                    reply_markup=None,
+                )
+                logger.warning("telegram_callback: action_id mismatch for session")
+                return
+
+            created_at = pending.get("created_at")
+            if created_at:
+                try:
+                    dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                    now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
+                    elapsed = (now - dt).total_seconds()
+                    if elapsed > self.CONFIRM_TIMEOUT_SEC:
+                        session.pending_confirmation = None
+                        if self.session_manager:
+                            self.session_manager.save(session)
+                        await query.edit_message_text(
+                            "⏱ Истекло время подтверждения (5 мин). Повторите запрос.",
+                            reply_markup=None,
+                        )
+                        logger.warning("telegram_callback: confirmation timeout action_id=%s", action_id)
+                        return
+                except (ValueError, TypeError):
+                    pass
+
+            if action == "info":
+                # Show full args, keep buttons
+                tool_name = pending.get("tool_name", "")
+                tool_args = pending.get("tool_args", {})
+                args_str = json.dumps(tool_args, ensure_ascii=False, indent=2)
+                detail_text = (
+                    f"⚠️ <b>Подробности</b>\n\n"
+                    f"Tool: <code>{tool_name}</code>\n\n"
+                    f"<pre>{args_str[:3500]}</pre>"
+                )
+                await query.edit_message_text(
+                    detail_text,
+                    reply_markup=self.create_confirmation_keyboard(action_id),
+                    parse_mode="HTML",
+                )
+                return
+
+            # yes, no, later — remove buttons and forward to agent
+            await query.edit_message_text(
+                query.message.text if query.message else "Обрабатываю...",
+                reply_markup=None,
+                parse_mode="HTML",
+            )
+
+            self._chat_ids[sender_id] = int(chat_id)
+            await self._handle_message(
+                sender_id=sender_id,
+                chat_id=chat_id,
+                content=action,
+                metadata={
+                    "user_id": user.id,
+                    "username": user.username,
+                    "first_name": user.first_name,
+                    "is_group": query.message.chat.type != "private" if query.message else False,
+                    "from_callback": True,
+                },
+            )
+            return
+
+        # --- Error retry callbacks (err:retry:id, err:cancel:id) ---
+        if callback_data.startswith(self.ERR_PREFIX):
+            parts = callback_data[len(self.ERR_PREFIX):].split(":", 1)
+            if len(parts) != 2:
+                logger.warning("telegram_callback: invalid err format data=%s", callback_data)
+                return
+            action, action_id = parts[0], parts[1]
+            logger.info(
+                "telegram_callback: err action=%s action_id=%s chat_id=%s user_id=%s",
+                action, action_id, chat_id, user.id,
+            )
+
+            await query.edit_message_text(
+                "Обрабатываю..." if action == "retry" else "Отменено.",
+                reply_markup=None,
+                parse_mode="HTML",
+            )
+
+            pending = self._pending_retry.pop(action_id, None)
+            if action == "retry" and pending:
+                if str(query.message.chat_id) == pending.get("chat_id"):
+                    retry_content = pending.get("retry_content", "")
+                    created_at = pending.get("created_at", "")
+                    if created_at:
+                        try:
+                            dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
+                            now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
+                            if (now - dt).total_seconds() > self.CONFIRM_TIMEOUT_SEC:
+                                await query.edit_message_text("Истекло время. Повторите запрос.")
+                                return
+                        except (ValueError, TypeError):
+                            pass
+                    self._chat_ids[sender_id] = int(chat_id)
+                    await self._handle_message(
+                        sender_id=sender_id,
+                        chat_id=chat_id,
+                        content=retry_content,
+                        metadata={
+                            "user_id": user.id,
+                            "username": user.username,
+                            "first_name": user.first_name,
+                            "is_group": query.message.chat.type != "private" if query.message else False,
+                            "from_retry": True,
+                        },
+                    )
+                else:
+                    await query.edit_message_text("Истекло время или действие не найдено.")
+            return
 
         if callback_data == self.CMD_MENU_MAIN:
+            logger.info("telegram_callback: menu main user_id=%s chat_id=%s", user.id, chat_id)
             self._set_menu_state(context, self.MENU_STATE_MAIN, push_previous=True)
             text, markup = self._render_menu_screen(self.MENU_STATE_MAIN, context)
             await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
@@ -473,11 +843,21 @@ class TelegramChannel(BaseChannel):
             await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
             return
 
-        if callback_data in {self.CMD_MENU_REFLECTION, self.CMD_MENU_MEMORY, self.CMD_MENU_TOOLS}:
+        if callback_data in {
+            self.CMD_MENU_REFLECTION,
+            self.CMD_MENU_MEMORY,
+            self.CMD_MENU_TOOLS,
+            self.CMD_MENU_FILES,
+            self.CMD_MENU_GIT,
+            self.CMD_MENU_SKILLS,
+        }:
             state_map = {
                 self.CMD_MENU_REFLECTION: self.MENU_STATE_REFLECTION,
                 self.CMD_MENU_MEMORY: self.MENU_STATE_MEMORY,
                 self.CMD_MENU_TOOLS: self.MENU_STATE_TOOLS,
+                self.CMD_MENU_FILES: self.MENU_STATE_FILES,
+                self.CMD_MENU_GIT: self.MENU_STATE_GIT,
+                self.CMD_MENU_SKILLS: self.MENU_STATE_SKILLS,
             }
             next_state = state_map[callback_data]
             self._set_menu_state(context, next_state, push_previous=True)
@@ -486,12 +866,14 @@ class TelegramChannel(BaseChannel):
             return
 
         if callback_data == self.CMD_BACK:
+            logger.info("telegram_callback: menu back user_id=%s chat_id=%s", user.id, chat_id)
             prev_state = self._pop_previous_menu_state(context)
             text, markup = self._render_menu_screen(prev_state, context)
             await query.edit_message_text(text, reply_markup=markup, parse_mode="HTML")
             return
 
         if callback_data == self.CMD_CANCEL:
+            logger.info("telegram_callback: menu cancel user_id=%s chat_id=%s", user.id, chat_id)
             context.user_data.pop(self.MENU_PENDING_COMMAND_KEY, None)
             self._set_menu_state(context, self.MENU_STATE_MAIN, reset_stack=True)
             text, markup = self._render_menu_screen(self.MENU_STATE_MAIN, context)
@@ -693,7 +1075,8 @@ class TelegramChannel(BaseChannel):
                 content_parts.append(f"[{media_type}: download failed]")
         
         content = "\n".join(content_parts) if content_parts else "[empty message]"
-        
+        content = self._resolve_quick_reply(content)
+
         logger.debug(f"Telegram message from {sender_id}: {content[:50]}...")
         
         str_chat_id = str(chat_id)
