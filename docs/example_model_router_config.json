@@ -1,0 +1,34 @@
+{
+  "modelRouter": {
+    "enabled": true,
+    "routingStrategy": "cost-based-routing",
+    "models": [
+      {
+        "modelName": "smart-model",
+        "litellmParams": { "model": "anthropic/claude-3-5-sonnet-20241022" },
+        "tpm": 100000,
+        "rpm": 100
+      },
+      {
+        "modelName": "cheap-model",
+        "litellmParams": { "model": "qwen/qwen3.5-plus-02-15" },
+        "tpm": 200000,
+        "rpm": 300
+      },
+      {
+        "modelName": "free-model",
+        "litellmParams": { "model": "openrouter/aurora-alpha" },
+        "tpm": 50000,
+        "rpm": 50
+      }
+    ],
+    "fallbacks": [
+      { "smart-model": "cheap-model" },
+      { "cheap-model": "free-model" }
+    ],
+    "routingRules": {
+      "keywordsSmart": ["code", "debug", "architecture", "error", "fix", "bug", "код", "дебаг", "архитектура", "ошибка"],
+      "maxWordsCheap": 50
+    }
+  }
+}

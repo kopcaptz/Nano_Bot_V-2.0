@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from typing import Any
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 from pydantic_settings import BaseSettings
 
@@ -232,6 +233,31 @@ class ExecToolConfig(BaseModel):
     timeout: int = 60
 
 
+class ModelRouterModelConfig(BaseModel):
+    """Single model entry for model router."""
+    model_name: str = ""
+    litellm_params: dict[str, Any] = Field(default_factory=dict)
+    tpm: int = 100000
+    rpm: int = 100
+
+
+class ModelRouterRoutingRules(BaseModel):
+    """Heuristic rules for model selection."""
+    keywords_smart: list[str] = Field(
+        default_factory=lambda: ["code", "debug", "architecture", "error", "fix", "bug", "код", "дебаг", "архитектура", "ошибка"]
+    )
+    max_words_cheap: int = 50
+
+
+class ModelRouterConfig(BaseModel):
+    """Smart model router configuration."""
+    enabled: bool = False
+    routing_strategy: str = "cost-based-routing"
+    models: list[ModelRouterModelConfig] = Field(default_factory=list)
+    fallbacks: list[dict[str, str | list[str]]] = Field(default_factory=list)
+    routing_rules: ModelRouterRoutingRules = Field(default_factory=ModelRouterRoutingRules)
+
+
 class ToolsConfig(BaseModel):
     """Tools configuration."""
     web: WebToolsConfig = Field(default_factory=WebToolsConfig)
@@ -246,6 +272,7 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    model_router: ModelRouterConfig | None = None
     
     @property
     def workspace_path(self) -> Path:

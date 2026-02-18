@@ -245,7 +245,8 @@ class AgentLoop:
                     self.provider.chat(
                         messages=messages,
                         tools=self.tools.get_definitions(),
-                        model=self.model
+                        model=self.model,
+                        metadata={"is_background": False},
                     ),
                     timeout=120.0,
                 )
@@ -512,6 +513,7 @@ class AgentLoop:
                         messages=messages,
                         tools=self.tools.get_definitions(),
                         model=self.model,
+                        metadata={"is_background": False},
                     ),
                     timeout=120.0,
                 )
@@ -691,7 +693,8 @@ class AgentLoop:
                     self.provider.chat(
                         messages=messages,
                         tools=self.tools.get_definitions(),
-                        model=self.model
+                        model=self.model,
+                        metadata={"is_background": True},
                     ),
                     timeout=120.0,
                 )
