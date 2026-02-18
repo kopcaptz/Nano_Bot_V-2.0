@@ -8,7 +8,10 @@ from pathlib import Path
 import re
 
 
-def _load_context_builder(memory_text: str):
+def _load_context_builder(
+    memory_text: str,
+    semantic_hits: list[dict[str, object]] | None = None,
+):
     """Load ContextBuilder with lightweight dependency stubs."""
 
     class _Logger:
@@ -25,17 +28,29 @@ def _load_context_builder(memory_text: str):
         def get_memory_context(self) -> str:
             return memory_text
 
+    hits = semantic_hits or []
+
     def _semantic_search(query: str, limit: int = 5):
-        return []
+        return hits[:limit]
 
-    sys.modules["loguru"] = types.SimpleNamespace(logger=_Logger())
-    sys.modules["nanobot.agent.memory"] = types.SimpleNamespace(MemoryStore=_MemoryStore)
-    sys.modules["nanobot.memory.db"] = types.SimpleNamespace(semantic_search=_semantic_search)
+    targets = ["loguru", "nanobot.agent.memory", "nanobot.memory.db"]
+    backups = {name: sys.modules.get(name) for name in targets}
 
-    module = types.ModuleType("context_under_test")
-    code = Path("/workspace/nanobot/agent/context.py").read_text(encoding="utf-8")
-    exec(code, module.__dict__)
-    return module.ContextBuilder
+    try:
+        sys.modules["loguru"] = types.SimpleNamespace(logger=_Logger())
+        sys.modules["nanobot.agent.memory"] = types.SimpleNamespace(MemoryStore=_MemoryStore)
+        sys.modules["nanobot.memory.db"] = types.SimpleNamespace(semantic_search=_semantic_search)
+
+        module = types.ModuleType("context_under_test")
+        code = Path("/workspace/nanobot/agent/context.py").read_text(encoding="utf-8")
+        exec(code, module.__dict__)
+        return module.ContextBuilder
+    finally:
+        for name, backup in backups.items():
+            if backup is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = backup
 
 
 class _FakeSkillManager:
@@ -134,3 +149,30 @@ def test_memory_and_skill_sections_are_guarded_by_budgets():
     # Prompt slice includes only the final skills block content.
     skills_block = prompt[skills_start:]
     assert len(skills_block) <= cb.MAX_SKILLS_SECTION_CHARS + 250
+
+
+def test_memory_fact_values_are_compacted_in_system_fact_message():
+    """Long semantic fact values should be truncated in extra system fact message."""
+    semantic_hits = [
+        {
+            "domain": "Project",
+            "category": "Architecture",
+            "key": "Notes",
+            "value": "VeryLongValue " * 80,
+            "distance": 0.2,
+        }
+    ]
+    context_builder = _load_context_builder(memory_text="", semantic_hits=semantic_hits)
+    cb = context_builder(Path("/workspace/workspace"), skill_manager=_FakeSkillManager())
+
+    messages = cb.build_messages(history=[], current_message="напомни архитектурные заметки")
+
+    fact_messages = [
+        m for m in messages
+        if m.get("role") == "system"
+        and str(m.get("content", "")).startswith("Relevant facts from your memory:\n")
+    ]
+    assert fact_messages, "Expected memory facts system message"
+    content = str(fact_messages[0]["content"])
+    assert "VeryLongValue" in content
+    assert "…" in content

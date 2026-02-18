@@ -29,9 +29,11 @@ class ContextBuilder:
     # Emergency token guards (keep context compact by default)
     MAX_MEMORY_CONTEXT_CHARS = 2500
     MAX_SKILLS_SECTION_CHARS = 2200
+    MAX_SYSTEM_PROMPT_CHARS = 14000
     MAX_RELEVANT_SKILLS = 3
     MAX_AVAILABLE_SKILLS = 12
     MAX_SKILL_DESCRIPTION_CHARS = 140
+    MAX_MEMORY_FACT_VALUE_CHARS = 180
     MIN_RELEVANT_SKILL_SCORE = 0.45
     MAX_RELEVANT_SKILL_DISTANCE = 0.55
     
@@ -179,7 +181,8 @@ class ContextBuilder:
                 parts.append(skills_text)
         
         elapsed_total_ms = (time.perf_counter() - t_total_start) * 1000
-        final_prompt = "\n\n---\n\n".join(parts)
+        raw_prompt = "\n\n---\n\n".join(parts)
+        final_prompt = self._truncate_text(raw_prompt, self.MAX_SYSTEM_PROMPT_CHARS)
         metrics = {
             "event": "build_system_prompt",
             "always_load_ms": round(elapsed_always_load_ms, 2),
@@ -190,6 +193,7 @@ class ContextBuilder:
             "relevant_skills_count": relevant_count,
             "available_skills_count": available_count,
             "prompt_chars": len(final_prompt),
+            "prompt_truncated": len(final_prompt) < len(raw_prompt),
         }
         if not self.skill_manager:
             metrics["skill_manager"] = False
@@ -242,6 +246,15 @@ class ContextBuilder:
             return distance <= self.MAX_RELEVANT_SKILL_DISTANCE
         # If score/distance absent, keep conservative and do not auto-inject.
         return False
+
+    def _format_memory_fact_value(self, value: Any) -> str:
+        """Compact memory fact value text to avoid oversized system messages."""
+        text = " ".join(str(value or "").strip().split())
+        if not text:
+            return "?"
+        if len(text) <= self.MAX_MEMORY_FACT_VALUE_CHARS:
+            return text
+        return text[: self.MAX_MEMORY_FACT_VALUE_CHARS - 1].rstrip() + "…"
     
     def _get_identity(self) -> str:
         """Get the core identity section."""
@@ -342,7 +355,8 @@ When remembering something, write to {workspace_path}/memory/MEMORY.md"""
                 relevant_facts = semantic_search(current_message, limit=5)
                 if relevant_facts:
                     facts_text = "\n".join(
-                        f"- [{f.get('domain', 'general')}] {f.get('category', '?')} → {f.get('key', '?')}: {f.get('value', '?')}"
+                        f"- [{f.get('domain', 'general')}] {f.get('category', '?')} → {f.get('key', '?')}: "
+                        f"{self._format_memory_fact_value(f.get('value', '?'))}"
                         for f in relevant_facts
                         if f.get("distance", 1.0) < 0.7
                     )
