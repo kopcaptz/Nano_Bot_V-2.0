@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from typing import Literal
 from pydantic import BaseModel, Field, ConfigDict, model_validator
 from pydantic_settings import BaseSettings
 
@@ -239,6 +240,41 @@ class ToolsConfig(BaseModel):
     restrict_to_workspace: bool = False  # If true, restrict all tool access to workspace directory
 
 
+class NavigatorThresholdsConfig(BaseModel):
+    """Rule-engine thresholds for hybrid navigator routing."""
+
+    complexity_low: float = Field(default=0.30, ge=0.0, le=1.0)
+    complexity_high: float = Field(default=0.75, ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _validate_complexity_bounds(self) -> "NavigatorThresholdsConfig":
+        """Ensure high threshold is above low threshold."""
+        if self.complexity_high <= self.complexity_low:
+            self.complexity_high = min(self.complexity_low + 0.10, 1.0)
+        return self
+
+
+class NavigatorPricingConfig(BaseModel):
+    """Optional per-1k token pricing for SLM cost estimation."""
+
+    input_per_1k: float = 0.0
+    output_per_1k: float = 0.0
+
+
+class NavigatorConfig(BaseModel):
+    """Hybrid navigator feature settings."""
+
+    enabled: bool = True
+    mode: Literal["pure_ai", "hybrid", "off"] = "hybrid"
+    model: str = "qwen-2.5-1.5b-instruct"
+    thresholds: NavigatorThresholdsConfig = Field(default_factory=NavigatorThresholdsConfig)
+    canary_percent: int = Field(default=0, ge=0, le=100)
+    cooldown_seconds: float = Field(default=2.0, ge=0.0, le=60.0)
+    slm_timeout_seconds: float = Field(default=2.0, gt=0.0, le=10.0)
+    log_path: str = "logs/navigator_pilot.jsonl"
+    pricing: NavigatorPricingConfig = Field(default_factory=NavigatorPricingConfig)
+
+
 class Config(BaseSettings):
     """Root configuration for nanobot."""
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
@@ -246,6 +282,7 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    navigator: NavigatorConfig = Field(default_factory=NavigatorConfig)
     
     @property
     def workspace_path(self) -> Path:
