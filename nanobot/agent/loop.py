@@ -53,6 +53,9 @@ class AgentLoop:
         workspace: Path,
         model: str | None = None,
         max_iterations: int = 20,
+        max_llm_calls: int | None = None,
+        llm_max_tokens: int | None = None,
+        llm_temperature: float | None = None,
         brave_api_key: str | None = None,
         exec_config: "ExecToolConfig | None" = None,
         cron_service: "CronService | None" = None,
@@ -66,6 +69,9 @@ class AgentLoop:
         self.workspace = workspace
         self.model = model or provider.get_default_model()
         self.max_iterations = max_iterations
+        self.max_llm_calls = max_llm_calls if max_llm_calls and max_llm_calls > 0 else max_iterations
+        self.llm_max_tokens = llm_max_tokens if llm_max_tokens and llm_max_tokens > 0 else None
+        self.llm_temperature = llm_temperature
         self.brave_api_key = brave_api_key
         self.exec_config = exec_config or ExecToolConfig()
         self.cron_service = cron_service
@@ -99,6 +105,23 @@ class AgentLoop:
         
         self._running = False
         self._register_default_tools()
+
+    def _build_chat_kwargs(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        """Build chat kwargs with configured LLM defaults."""
+        kwargs: dict[str, Any] = {
+            "messages": messages,
+            "tools": self.tools.get_definitions(),
+            "model": self.model,
+        }
+        if self.llm_max_tokens is not None:
+            kwargs["max_tokens"] = self.llm_max_tokens
+        if self.llm_temperature is not None:
+            kwargs["temperature"] = self.llm_temperature
+        return kwargs
+
+    async def _call_llm(self, messages: list[dict[str, Any]]) -> Any:
+        """Call provider chat with configured kwargs."""
+        return await self.provider.chat(**self._build_chat_kwargs(messages))
     
     def _register_default_tools(self) -> None:
         """Register the default set of tools."""
@@ -179,7 +202,11 @@ class AgentLoop:
         self._running = False
         logger.info("Agent loop stopping")
     
-    async def _process_message(self, msg: InboundMessage) -> OutboundMessage | None:
+    async def _process_message(
+        self,
+        msg: InboundMessage,
+        session_key_override: str | None = None,
+    ) -> OutboundMessage | None:
         """
         Process a single inbound message.
         
@@ -198,12 +225,13 @@ class AgentLoop:
         logger.info(f"Processing message from {msg.channel}:{msg.sender_id}: {preview}")
         
         # Get or create session
-        session = self.sessions.get_or_create(msg.session_key)
+        effective_session_key = session_key_override or msg.session_key
+        session = self.sessions.get_or_create(effective_session_key)
 
         # Update session key for create_skill tool
         create_skill_tool = self.tools.get("create_skill")
         if isinstance(create_skill_tool, CreateSkillTool):
-            create_skill_tool.set_session_key(msg.session_key)
+            create_skill_tool.set_session_key(effective_session_key)
 
         # Check if we're waiting for confirmation
         if session.pending_confirmation:
@@ -233,20 +261,18 @@ class AgentLoop:
         
         # Agent loop
         iteration = 0
+        llm_calls = 0
         final_content = None
         
-        while iteration < self.max_iterations:
+        while iteration < self.max_iterations and llm_calls < self.max_llm_calls:
             iteration += 1
+            llm_calls += 1
             
             # Call LLM (with timeout to avoid hanging)
             try:
                 logger.info(f"LLM call iteration {iteration}...")
                 response = await asyncio.wait_for(
-                    self.provider.chat(
-                        messages=messages,
-                        tools=self.tools.get_definitions(),
-                        model=self.model
-                    ),
+                    self._call_llm(messages),
                     timeout=120.0,
                 )
             except asyncio.TimeoutError:
@@ -315,6 +341,8 @@ class AgentLoop:
                             "assistant_content": response.content,
                             "reasoning_content": response.reasoning_content,
                             "original_user_message": msg.content,
+                            "llm_calls": llm_calls,
+                            "iterations": iteration,
                             "action_id": action_id,
                             "created_at": datetime.now().isoformat(),
                         }
@@ -349,7 +377,7 @@ class AgentLoop:
                                     tool_args=args_str[:500],
                                     error_text=result[:500],
                                     insight=insight[:1000],
-                                    session_key=msg.session_key,
+                                    session_key=effective_session_key,
                                 )
                         except Exception as e:
                             logger.warning(f"Reflection failed: {e}")
@@ -363,7 +391,18 @@ class AgentLoop:
                 break
         
         if final_content is None:
-            final_content = "I've completed processing but have no response to give."
+            if llm_calls >= self.max_llm_calls:
+                final_content = (
+                    f"I reached the per-request LLM call limit ({self.max_llm_calls}). "
+                    "Please refine the task or continue in smaller steps."
+                )
+            elif iteration >= self.max_iterations:
+                final_content = (
+                    f"I reached the tool iteration limit ({self.max_iterations}). "
+                    "Please refine the task or continue in smaller steps."
+                )
+            else:
+                final_content = "I've completed processing but have no response to give."
 
         # Анализ: стоит ли предложить создание навыка?
         if iteration >= 5 and final_content:
@@ -430,7 +469,7 @@ class AgentLoop:
                             tool_args=json.dumps(tool_args, ensure_ascii=False)[:500],
                             error_text=result[:500],
                             insight=insight[:1000],
-                            session_key=msg.session_key,
+                            session_key=session.key,
                         )
                 except Exception as e:
                     logger.warning(f"Reflection failed: {e}")
@@ -449,7 +488,12 @@ class AgentLoop:
 
             # Continue processing
             return await self._continue_after_tool(
-                session, msg, messages, original_user_message
+                session,
+                msg,
+                messages,
+                original_user_message,
+                initial_llm_calls=int(pending.get("llm_calls", 0)),
+                initial_iterations=int(pending.get("iterations", 0)),
             )
 
         elif user_response in ["no", "n", "нет", "н"]:
@@ -498,21 +542,21 @@ class AgentLoop:
         msg: InboundMessage,
         messages: list[dict[str, Any]],
         original_user_message: str,
+        initial_llm_calls: int = 0,
+        initial_iterations: int = 0,
     ) -> OutboundMessage | None:
         """Continue agent loop after tool execution (post-confirmation)."""
-        iteration = 0
+        iteration = max(0, initial_iterations)
+        llm_calls = max(0, initial_llm_calls)
         final_content = None
 
-        while iteration < self.max_iterations:
+        while iteration < self.max_iterations and llm_calls < self.max_llm_calls:
             iteration += 1
+            llm_calls += 1
 
             try:
                 response = await asyncio.wait_for(
-                    self.provider.chat(
-                        messages=messages,
-                        tools=self.tools.get_definitions(),
-                        model=self.model,
-                    ),
+                    self._call_llm(messages),
                     timeout=120.0,
                 )
             except asyncio.TimeoutError:
@@ -548,7 +592,7 @@ class AgentLoop:
                 for tool_call in response.tool_calls:
                     create_skill_tool = self.tools.get("create_skill")
                     if isinstance(create_skill_tool, CreateSkillTool):
-                        create_skill_tool.set_session_key(msg.session_key)
+                        create_skill_tool.set_session_key(session.key)
                         create_skill_tool.set_messages(messages)
 
                     tool_name = tool_call.name
@@ -576,6 +620,8 @@ class AgentLoop:
                             "assistant_content": response.content,
                             "reasoning_content": response.reasoning_content,
                             "original_user_message": original_user_message,
+                            "llm_calls": llm_calls,
+                            "iterations": iteration,
                             "action_id": action_id,
                             "created_at": datetime.now().isoformat(),
                         }
@@ -609,7 +655,7 @@ class AgentLoop:
                                     tool_args=args_str[:500],
                                     error_text=result[:500],
                                     insight=insight[:1000],
-                                    session_key=msg.session_key,
+                                    session_key=session.key,
                                 )
                         except Exception as e:
                             logger.warning(f"Reflection failed: {e}")
@@ -622,7 +668,18 @@ class AgentLoop:
                 break
 
         if final_content is None:
-            final_content = "I've completed processing but have no response to give."
+            if llm_calls >= self.max_llm_calls:
+                final_content = (
+                    f"I reached the per-request LLM call limit ({self.max_llm_calls}). "
+                    "Please refine the task or continue in smaller steps."
+                )
+            elif iteration >= self.max_iterations:
+                final_content = (
+                    f"I reached the tool iteration limit ({self.max_iterations}). "
+                    "Please refine the task or continue in smaller steps."
+                )
+            else:
+                final_content = "I've completed processing but have no response to give."
 
         session.add_message("user", original_user_message)
         session.add_message("assistant", final_content)
@@ -681,18 +738,16 @@ class AgentLoop:
         
         # Agent loop (limited for announce handling)
         iteration = 0
+        llm_calls = 0
         final_content = None
         
-        while iteration < self.max_iterations:
+        while iteration < self.max_iterations and llm_calls < self.max_llm_calls:
             iteration += 1
+            llm_calls += 1
             
             try:
                 response = await asyncio.wait_for(
-                    self.provider.chat(
-                        messages=messages,
-                        tools=self.tools.get_definitions(),
-                        model=self.model
-                    ),
+                    self._call_llm(messages),
                     timeout=120.0,
                 )
             except asyncio.TimeoutError:
@@ -766,7 +821,16 @@ class AgentLoop:
                 break
 
         if final_content is None:
-            final_content = "Background task completed."
+            if llm_calls >= self.max_llm_calls:
+                final_content = (
+                    f"Background task reached the LLM call limit ({self.max_llm_calls})."
+                )
+            elif iteration >= self.max_iterations:
+                final_content = (
+                    f"Background task reached the iteration limit ({self.max_iterations})."
+                )
+            else:
+                final_content = "Background task completed."
         
         # Save to session (mark as system message in history)
         session.add_message("user", f"[System: {msg.sender_id}] {msg.content}")
@@ -805,5 +869,5 @@ class AgentLoop:
             content=content
         )
         
-        response = await self._process_message(msg)
+        response = await self._process_message(msg, session_key_override=session_key)
         return response.content if response else ""
