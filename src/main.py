@@ -17,7 +17,6 @@ try:  # script mode: python src/main.py
     from core.gateway_bridge import set_workspace as gateway_set_workspace
     from core.handler import CommandHandler
     from core.llm_router import LLMRouter
-    from core.memory import CrystalMemory
 except ModuleNotFoundError:  # package mode: import src.main
     from src.adapters.browser_adapter import BrowserAdapter
     from src.adapters.gmail_adapter import GmailAdapter
@@ -29,7 +28,8 @@ except ModuleNotFoundError:  # package mode: import src.main
     from src.core.gateway_bridge import set_workspace as gateway_set_workspace
     from src.core.handler import CommandHandler
     from src.core.llm_router import LLMRouter
-    from src.core.memory import CrystalMemory
+
+from nanobot.session.manager import SessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ async def main() -> None:
     gateway_set_workspace(config.agent_workspace)
 
     event_bus = EventBus()
-    memory = CrystalMemory(max_messages_per_chat=config.memory_max_messages)
+    session_manager = SessionManager(workspace=config.agent_workspace)
     llm_router = LLMRouter(
         api_key=config.openrouter_api_key,
         model=config.openrouter_model,
@@ -69,8 +69,9 @@ async def main() -> None:
     command_handler = CommandHandler(
         event_bus=event_bus,
         llm_router=llm_router,
-        memory=memory,
+        session_manager=session_manager,
         max_command_length=config.handler_max_command_length,
+        max_messages_per_chat=config.memory_max_messages,
         telegram=telegram_adapter,
         system=system_adapter,
         browser=browser_adapter,

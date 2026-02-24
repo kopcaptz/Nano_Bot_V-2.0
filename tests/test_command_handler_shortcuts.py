@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import shutil
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -15,7 +17,7 @@ if str(SRC_DIR) not in sys.path:
 
 from core.event_bus import EventBus  # noqa: E402
 from core.handler import CommandHandler  # noqa: E402
-from core.memory import CrystalMemory  # noqa: E402
+from nanobot.session.manager import SessionManager  # noqa: E402
 
 
 class DummyLLMRouter:
@@ -37,18 +39,29 @@ class CommandHandlerShortcutsTests(unittest.IsolatedAsyncioTestCase):
 
     async def asyncSetUp(self) -> None:
         self.event_bus = EventBus()
-        self.memory = CrystalMemory()
+        self._tmp_dir = tempfile.mkdtemp()
+        self.session_manager = SessionManager(
+            workspace=Path(self._tmp_dir),
+            sessions_dir=Path(self._tmp_dir) / "sessions",
+        )
         self.llm = DummyLLMRouter()
-        self.handler = CommandHandler(self.event_bus, self.llm, self.memory)
+        self.handler = CommandHandler(
+            self.event_bus, self.llm, self.session_manager,
+        )
         await self.handler.initialize()
         self.replies: list[dict[str, Any]] = []
         await self.event_bus.subscribe("telegram.send.reply", self._capture_reply)
 
     async def asyncTearDown(self) -> None:
         await self.handler.shutdown()
+        shutil.rmtree(self._tmp_dir, ignore_errors=True)
 
     async def _capture_reply(self, payload: dict[str, Any]) -> None:
         self.replies.append(dict(payload))
+
+    def _get_history(self, chat_id: int) -> list[dict]:
+        """Helper: fetch history from SessionManager the same way handler does."""
+        return self.handler._get_session_history(chat_id)
 
     async def _publish_command(self, chat_id: int, command: str, wait_for_debounce: bool = False) -> dict[str, Any]:
         await self.event_bus.publish(
@@ -68,21 +81,21 @@ class CommandHandlerShortcutsTests(unittest.IsolatedAsyncioTestCase):
         reply = await self._publish_command(chat_id=7001, command="/ping")
         self.assertEqual(reply["text"], "pong")
         self.assertEqual(self.llm.calls, [])
-        self.assertEqual(self.memory.get_history(7001), [])
+        self.assertEqual(self._get_history(7001), [])
 
     async def test_unknown_slash_returns_help_hint_without_llm_call(self) -> None:
         """Unknown slash commands should not hit the LLM path."""
         reply = await self._publish_command(chat_id=7002, command="/unknown arg")
         self.assertEqual(reply["text"], "Неизвестная команда. Используйте /help.")
         self.assertEqual(self.llm.calls, [])
-        self.assertEqual(self.memory.get_history(7002), [])
+        self.assertEqual(self._get_history(7002), [])
 
     async def test_status_shortcut_is_not_persisted(self) -> None:
         """Known slash shortcuts should stay out of conversation history."""
         reply = await self._publish_command(chat_id=7004, command="/status")
         self.assertIn("Статус Nano Bot V-2.0:", reply["text"])
         self.assertEqual(self.llm.calls, [])
-        self.assertEqual(self.memory.get_history(7004), [])
+        self.assertEqual(self._get_history(7004), [])
 
     async def test_regular_text_goes_to_llm_and_persists_turns(self) -> None:
         """Non-slash text must call LLM and persist user+assistant messages."""
@@ -91,7 +104,7 @@ class CommandHandlerShortcutsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.llm.calls), 1)
         self.assertEqual(self.llm.calls[0][0], "hello bot")
 
-        history = self.memory.get_history(7003)
+        history = self._get_history(7003)
         self.assertEqual(
             history,
             [
@@ -134,7 +147,7 @@ class CommandHandlerShortcutsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.llm.calls[0][0], "Hello this is a test")
         
         # History should show the combined message
-        history = self.memory.get_history(chat_id)
+        history = self._get_history(chat_id)
         self.assertEqual(
             history,
             [
@@ -184,6 +197,91 @@ class CommandHandlerShortcutsTests(unittest.IsolatedAsyncioTestCase):
         reply = self.replies[-1]
         self.assertIn("Календарь недоступен", reply["text"])
         self.assertIn("smithery", reply["text"].lower())
+
+
+class SessionManagerPersistenceTests(unittest.IsolatedAsyncioTestCase):
+    """Verify that conversation history persists across handler restarts."""
+
+    async def test_history_survives_handler_restart(self) -> None:
+        """Messages saved by one handler instance are visible after re-creation."""
+        tmp_dir = tempfile.mkdtemp()
+        sessions_dir = Path(tmp_dir) / "sessions"
+        try:
+            sm = SessionManager(workspace=Path(tmp_dir), sessions_dir=sessions_dir)
+            bus = EventBus()
+            llm = DummyLLMRouter()
+
+            # --- first handler lifetime ---
+            h1 = CommandHandler(bus, llm, sm)
+            await h1.initialize()
+            await bus.subscribe("telegram.send.reply", lambda _: None)
+
+            await bus.publish(
+                "telegram.command.received",
+                {"chat_id": 9001, "command": "remember me"},
+            )
+            await asyncio.sleep(5.2)
+            await h1.shutdown()
+
+            history_after_first = h1._get_session_history(9001)
+            self.assertEqual(len(history_after_first), 2)
+
+            # --- simulate restart: new SessionManager, new handler, same dir ---
+            sm2 = SessionManager(workspace=Path(tmp_dir), sessions_dir=sessions_dir)
+            bus2 = EventBus()
+            llm2 = DummyLLMRouter()
+            h2 = CommandHandler(bus2, llm2, sm2)
+            await h2.initialize()
+
+            history_after_restart = h2._get_session_history(9001)
+            self.assertEqual(len(history_after_restart), 2)
+            self.assertEqual(history_after_restart[0]["role"], "user")
+            self.assertEqual(history_after_restart[0]["content"], "remember me")
+            self.assertEqual(history_after_restart[1]["role"], "assistant")
+            self.assertEqual(history_after_restart[1]["content"], "llm-result")
+            await h2.shutdown()
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    async def test_clear_history_removes_persistent_data(self) -> None:
+        """After /clear_history, a restarted handler should see empty history."""
+        tmp_dir = tempfile.mkdtemp()
+        sessions_dir = Path(tmp_dir) / "sessions"
+        try:
+            sm = SessionManager(workspace=Path(tmp_dir), sessions_dir=sessions_dir)
+            bus = EventBus()
+            llm = DummyLLMRouter()
+
+            h1 = CommandHandler(bus, llm, sm)
+            await h1.initialize()
+            replies: list[dict] = []
+            await bus.subscribe("telegram.send.reply", lambda p: replies.append(p))
+
+            # Add some history
+            await bus.publish(
+                "telegram.command.received",
+                {"chat_id": 9002, "command": "some message"},
+            )
+            await asyncio.sleep(5.2)
+            self.assertEqual(len(h1._get_session_history(9002)), 2)
+
+            # Clear
+            await bus.publish(
+                "telegram.command.received",
+                {"chat_id": 9002, "command": "/clear_history"},
+            )
+            await asyncio.sleep(0.1)
+            self.assertEqual(len(h1._get_session_history(9002)), 0)
+
+            await h1.shutdown()
+
+            # Restart
+            sm2 = SessionManager(workspace=Path(tmp_dir), sessions_dir=sessions_dir)
+            h2 = CommandHandler(EventBus(), DummyLLMRouter(), sm2)
+            self.assertEqual(len(h2._get_session_history(9002)), 0)
+            await h2.shutdown()
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 if __name__ == "__main__":
