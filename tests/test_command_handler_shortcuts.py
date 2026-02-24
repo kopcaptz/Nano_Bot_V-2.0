@@ -7,6 +7,7 @@ import sys
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock, patch
 
 
 SRC_DIR = Path(__file__).resolve().parents[1] / "src"
@@ -43,6 +44,15 @@ class CommandHandlerShortcutsTests(unittest.IsolatedAsyncioTestCase):
         await self.handler.initialize()
         self.replies: list[dict[str, Any]] = []
         await self.event_bus.subscribe("telegram.send.reply", self._capture_reply)
+
+        # Patch gateway_execute_task so tests don't need a real nanobot agent
+        patcher = patch(
+            "core.handler.gateway_execute_task",
+            new_callable=AsyncMock,
+            return_value="agent-result",
+        )
+        self._gateway_mock = patcher.start()
+        self.addCleanup(patcher.stop)
 
     async def asyncTearDown(self) -> None:
         await self.handler.shutdown()
@@ -84,24 +94,29 @@ class CommandHandlerShortcutsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.llm.calls, [])
         self.assertEqual(self.memory.get_history(7004), [])
 
-    async def test_regular_text_goes_to_llm_and_persists_turns(self) -> None:
-        """Non-slash text must call LLM and persist user+assistant messages."""
+    async def test_regular_text_delegates_to_agent_and_persists_turns(self) -> None:
+        """Non-slash text must be delegated to AgentLoop via gateway and persist user+assistant messages."""
         reply = await self._publish_command(chat_id=7003, command="hello bot", wait_for_debounce=True)
-        self.assertEqual(reply["text"], "llm-result")
-        self.assertEqual(len(self.llm.calls), 1)
-        self.assertEqual(self.llm.calls[0][0], "hello bot")
+        self.assertEqual(reply["text"], "agent-result")
+        # LLM router should NOT be called — delegation goes directly to gateway
+        self.assertEqual(len(self.llm.calls), 0)
+        # Gateway should have been called with correct session_key
+        self._gateway_mock.assert_called_once_with(
+            task="hello bot",
+            session_key="telegram:7003",
+        )
 
         history = self.memory.get_history(7003)
         self.assertEqual(
             history,
             [
                 {"role": "user", "content": "hello bot"},
-                {"role": "assistant", "content": "llm-result"},
+                {"role": "assistant", "content": "agent-result"},
             ],
         )
 
     async def test_debounce_accumulates_multiple_messages(self) -> None:
-        """Multiple rapid messages should be accumulated and sent as one."""
+        """Multiple rapid messages should be accumulated and sent as one to the agent."""
         chat_id = 7005
         
         # Send three messages in rapid succession
@@ -127,11 +142,13 @@ class CommandHandlerShortcutsTests(unittest.IsolatedAsyncioTestCase):
         
         # Should have received exactly one reply
         self.assertEqual(len(self.replies), 1)
-        self.assertEqual(self.replies[0]["text"], "llm-result")
+        self.assertEqual(self.replies[0]["text"], "agent-result")
         
-        # LLM should have been called once with concatenated message
-        self.assertEqual(len(self.llm.calls), 1)
-        self.assertEqual(self.llm.calls[0][0], "Hello this is a test")
+        # Gateway should have been called once with concatenated message
+        self._gateway_mock.assert_called_once_with(
+            task="Hello this is a test",
+            session_key=f"telegram:{chat_id}",
+        )
         
         # History should show the combined message
         history = self.memory.get_history(chat_id)
@@ -139,7 +156,7 @@ class CommandHandlerShortcutsTests(unittest.IsolatedAsyncioTestCase):
             history,
             [
                 {"role": "user", "content": "Hello this is a test"},
-                {"role": "assistant", "content": "llm-result"},
+                {"role": "assistant", "content": "agent-result"},
             ],
         )
 
@@ -162,28 +179,21 @@ class CommandHandlerShortcutsTests(unittest.IsolatedAsyncioTestCase):
         # Should not call LLM
         self.assertEqual(len(self.llm.calls), 0)
 
-    async def test_calendar_action_triggers_bridge_and_returns_error_when_not_authed(
-        self,
-    ) -> None:
-        """When LLM returns [ACTION:CALENDAR_LIST], handler calls bridge and surfaces auth error."""
-        orig = self.llm.process_command
-
-        async def return_calendar_action(**kwargs: Any) -> str:
-            await orig(**kwargs)
-            return "[ACTION:CALENDAR_LIST]"
-
-        self.llm.process_command = return_calendar_action
-
+    async def test_calendar_request_delegates_to_agent(self) -> None:
+        """Calendar-related natural-language request should be delegated to agent."""
         await self.event_bus.publish(
             "telegram.command.received",
             {"chat_id": 7007, "command": "Что у меня завтра в календаре?"},
         )
-        # Debounce 5s + bridge call ~3s
-        await asyncio.sleep(9.0)
+        # Debounce 5s + processing
+        await asyncio.sleep(5.5)
         self.assertTrue(self.replies, msg="Expected at least one reply event")
         reply = self.replies[-1]
-        self.assertIn("Календарь недоступен", reply["text"])
-        self.assertIn("smithery", reply["text"].lower())
+        self.assertEqual(reply["text"], "agent-result")
+        self._gateway_mock.assert_called_once_with(
+            task="Что у меня завтра в календаре?",
+            session_key="telegram:7007",
+        )
 
 
 if __name__ == "__main__":
